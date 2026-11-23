@@ -141,6 +141,9 @@ button:focus-visible, summary:focus-visible, input:focus-visible + .slider, .hel
 }
 
 .caption-controls { display: flex; gap: 3px; }
+body[data-platform="macos"] .caption-controls,
+body[data-platform="macos"][data-mac-installed="false"] :is([data-ctrl="auto_kill"], [data-ctrl="autostart"], .local-tools .row-actions, .local-tools .help) { display: none; }
+.platform-note { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.6; }
 .caption-controls button,
 .theme-toggle,
 .tool-menu summary {

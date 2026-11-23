@@ -44,6 +44,7 @@
     align_timezone: ["btnAlignTz", "btnRestoreTz"],
     restore_timezone: ["btnAlignTz", "btnRestoreTz"],
     kill_claude_app: ["btnKillClaude"],
+    launch_claude_app: ["btnLaunchClaude", "btnKillClaude"],
     toggle_alert_sound: ["swAlertSound"],
     toggle_auto_kill_claude: ["swAutoKill"],
     toggle_autostart: ["swAutostart"],
@@ -86,7 +87,8 @@
       const el = $(id);
       if (!el) continue;
       const busy = pendingIds.has(id);
-      el.disabled = busy || (id === "btnLockIp" && (!state.data?.config || (!monitoring && !state.data?.report?.exit_info?.ip)));
+      el.disabled = busy || (id === "btnLockIp" && (!state.data?.config || (!monitoring && !state.data?.report?.exit_info?.ip)))
+        || (id === "btnLaunchClaude" && !state.data?.report?.states?.firewall_active);
       const sw = el.closest?.(".switch");
       if (sw) {
         sw.classList.toggle("is-loading", busy);
@@ -289,9 +291,11 @@
     syncMascot();
 
     let title = "等待首次巡检";
-    let description = "巡检完成后会显示防护状态。";
+    const isMac = state.data?.platform === "macos";
+    let description = isMac ? "巡检完成后会显示网络状态。" : "巡检完成后会显示防护状态。";
     if (report) {
       title = issue?.level === "UNKNOWN" ? "部分状态待核实" : statusTitles[report.overall] || statusTitles.yellow;
+      if (isMac && report.overall === "red") title = "检测到网络异常";
       description = issue?.summary || (totals.length ? "所有检查项均已通过。" : "暂无可显示的检查结果。");
     }
     if (scanning) {
@@ -332,6 +336,20 @@
     if (!payload) return;
     state.data = payload;
     const cfg = payload.config || {};
+    const isMac = payload.platform === "macos";
+    const canProtect = !isMac || payload.mac_installed;
+    document.body.dataset.platform = payload.platform || "windows";
+    document.body.dataset.macInstalled = String(Boolean(payload.mac_installed));
+    $("macProtectionNote").hidden = canProtect;
+    $("protectionControls").hidden = !canProtect;
+    $("btnEnableAll").hidden = !canProtect;
+    $("btnRescue").hidden = !canProtect;
+    $("btnLaunchClaude").hidden = !isMac || !canProtect;
+    setText("killswitchLabel", isMac ? "Claude Desktop 断网锁" : "防火墙断网锁");
+    if (isMac) $("killswitchHelp").dataset.tip = "启用网络扩展后，通过 Guard 启动 Claude Desktop。该应用的外部连接使用 Guard-Claude 本机代理。";
+    setText("scriptModalTitle", isMac ? "Clash 本机代理与出口检测脚本" : "Clash 全局分流覆写脚本（可选）");
+    setText("scriptStepTwo", isMac ? "切到规则模式，为 Guard-Probe 和 Guard-Claude 分别选择节点。" : "脚本会选择订阅的 AI 或主代理组，并添加 Claude 相关分流规则。");
+    setText("scriptStepThree", isMac ? "回到 Guard 启用断网锁，按系统提示批准网络扩展，然后点击「受保护地启动」。" : "在 Clash Verge 中按需开启 TUN，再回到 Claude Guard 点击「立即自检」。");
     renderLockState(cfg);
     updatePendingControls();
     const totals = renderOverviewStatus();
@@ -340,9 +358,9 @@
     $("versionTag").textContent = `${ver} · 十月Archive`;
     if ($("aboutVersion")) $("aboutVersion").textContent = `${ver} · 本地透明网络环境防护工具`;
     const priv = $("privPill");
-    priv.textContent = payload.is_admin ? "管理员模式" : "只读模式 · 以管理员重启";
-    priv.disabled = payload.is_admin;
-    priv.title = payload.is_admin ? "当前可修改系统配置" : "修改系统配置需要管理员权限";
+    priv.textContent = isMac ? (canProtect ? "macOS · 按次授权" : "macOS · 只读诊断") : payload.is_admin ? "管理员模式" : "只读模式 · 以管理员重启";
+    priv.disabled = isMac || payload.is_admin;
+    priv.title = isMac ? "查看网络和出口状态" : payload.is_admin ? "当前可修改系统配置" : "修改系统配置需要管理员权限";
 
     renderLogs(payload.logs || []);
     renderUpdateState(payload.update, payload.update_progress);
@@ -368,11 +386,11 @@
     if (exitNote) {
       exitNote.textContent = ex.path === PROBE_PATH
         ? "通过 Clash Guard-Probe 回环通道核验"
-        : "通过当前活跃 TUN 通道实时核验";
+        : isMac ? "需要核实 Clash Guard-Probe 回环入口" : "通过当前活跃 TUN 通道实时核验";
     }
     const cfgProbeBtn = $("btnConfigureProbe");
     if (cfgProbeBtn) {
-      cfgProbeBtn.hidden = !(payload.clash_dir_exists && !ex.ip && !report?.tun_up);
+      cfgProbeBtn.hidden = !(payload.clash_dir_exists && !ex.ip && (isMac || !report?.tun_up));
     }
     const networkKind = ex.is_proxy === true ? "代理库" : ex.is_hosting === true ? "机房段" :
       ex.is_hosting === false ? "非机房" : "";
@@ -387,15 +405,15 @@
     const tunCheck = report?.items?.find(item => item.id === "tun");
     const tunKnown = Boolean(tunCheck && tunCheck.level !== "UNKNOWN");
     const tunOnline = Boolean(report?.tun_up);
-    $("tunState").dataset.level = !tunKnown ? "unknown" : tunOnline ? "online" : "offline";
-    $("tunState").textContent = !tunKnown ? "TUN 待确认" : tunOnline ? "TUN 在线" : "TUN 未就绪";
+    $("tunState").dataset.level = !tunKnown || (isMac && tunOnline) ? "unknown" : tunOnline ? "online" : "offline";
+    $("tunState").textContent = !tunKnown ? "TUN 待确认" : tunOnline ? (isMac ? "经 utun · 归属待确认" : "TUN 在线") : "TUN 未就绪";
 
     const st = report?.states || {};
     const firewallRules = st.firewall_rule_count || 0;
     const firewallKnown = Boolean(report && st.firewall_known !== false);
     const firewallPartial = Boolean(firewallRules && !st.firewall_active);
     updateControlTile("killswitch", "swKillswitch", Boolean(st.firewall_active),
-      st.firewall_active ? `已验证 · ${firewallRules} 条拦截规则` :
+      st.firewall_active ? (isMac ? "网络扩展已启用" : `已验证 · ${firewallRules} 条拦截规则`) :
         !firewallKnown ? "状态未知" : firewallPartial ? "规则覆盖不完整 · 开启可自动补全" : "未开启防直连规则"
     );
     document.querySelector('[data-ctrl="killswitch"]')?.classList.toggle("is-warn", firewallPartial);
@@ -420,11 +438,13 @@
     const claudeCount = Number(st.claude_proc_count || 0);
     const claudeTile = document.querySelector('[data-ctrl="claude_proc"]');
     if (claudeTile) claudeTile.classList.toggle("is-active", claudeCount === 0);
-    $("ctrlClaudeSub").textContent = claudeCount > 0 ? `运行中：${claudeCount} 个进程` : report ? "未运行" : "待确认";
+    const processCheck = report?.items?.find(item => item.id === "processes");
+    $("ctrlClaudeSub").textContent = claudeCount > 0 ? `运行中：${claudeCount} 个进程` : report && processCheck?.level !== "UNKNOWN" ? "未运行" : "待确认";
 
     // 实时守护
     const fastSec = Number(cfg.fast_watch_interval_sec || 3);
     const fullSec = Number(cfg.poll_interval_sec || 60);
+    if (isMac) $("watchHelp").dataset.tip = "窗口最小化后继续巡检。菜单栏显示巡检状态，开启提示音后可听到异常提示。";
     $("watchMeta").textContent = `${fastSec} 秒本地快检 · ${fullSec} 秒出口巡检`;
     const intervalEl = $("interval");
     if (intervalEl) intervalEl.textContent = `${fastSec}s 本地快检 · ${fullSec}s 出口巡检`;
@@ -836,7 +856,7 @@
         ? "更新中…"
         : avail && !canSelf
           ? "源码模式请手动下载"
-          : "一键更新并重启";
+          : state.data?.platform === "macos" ? "下载签名安装包" : "一键更新并重启";
     }
   }
 
@@ -904,7 +924,9 @@
           else if (res.update?.available) flashMascot("done", "发现新版本", 3000);
           else flashMascot("done", "已是最新版", 2600);
         } else if (method === "install_update") {
-          flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "更新未完成" : "即将重启更新", 2800);
+          flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "更新未完成" : state.data?.platform === "macos" ? "已打开下载" : "即将重启更新", 2800);
+        } else if (method === "toggle_webrtc" && state.data?.platform === "macos") {
+          flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "无法打开配置" : "请在系统设置确认", 2800);
         } else if (method === "run_rescue") {
           flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "恢复未完成" : "已恢复默认", 2800);
         } else if (method === "kill_claude_app") {
@@ -981,6 +1003,7 @@
     $("swWebrtc").addEventListener("change", (ev) => callApi("toggle_webrtc", ev.target.checked));
     $("swIpv6").addEventListener("change", (ev) => callApi("toggle_ipv6", ev.target.checked));
     $("btnKillClaude").addEventListener("click", () => callApi("kill_claude_app"));
+    $("btnLaunchClaude").addEventListener("click", () => callApi("launch_claude_app"));
     $("swAlertSound").addEventListener("change", (ev) => callApi("toggle_alert_sound", ev.target.checked));
     $("swAutoKill").addEventListener("change", (ev) => callApi("toggle_auto_kill_claude", ev.target.checked));
     $("swAutostart").addEventListener("change", (ev) => callApi("toggle_autostart", ev.target.checked));
@@ -1009,7 +1032,9 @@
     $("btnRescue").addEventListener("click", async () => {
       const confirmed = await showConfirm(
         "执行紧急网络恢复 (Rescue)",
-        "将删除 Claude Guard 的断网锁规则，并按备份恢复 DNS、WebRTC、IPv6 和时区。\n\n未完成的恢复项目会保留备份，可在日志中查看详情。",
+        state.data?.platform === "macos"
+          ? "将按备份恢复 DNS、IPv6 和时区，并移除本应用的过滤配置。若已安装 WebRTC 描述文件，请在系统设置中移除它。"
+          : "将删除 Claude Guard 的断网锁规则，并按备份恢复 DNS、WebRTC、IPv6 和时区。\n\n未完成的恢复项目会保留备份，可在日志中查看详情。",
         "立即恢复"
       );
       if (confirmed) await callApi("run_rescue");
