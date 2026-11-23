@@ -60,6 +60,7 @@ jobs:
           $downloadUrl = "https://github.com/$repo/releases/download/$tag/ClaudeGuard.exe"
           $releaseUrl = "https://github.com/$repo/releases/tag/$tag"
 
+          git fetch --force --tags origin
           $tagBody = (git for-each-ref --format="%(contents)" "refs/tags/$tag" | Out-String).Trim()
           $genericTag = "Claude Guard $tag"
           if (-not $tagBody -or $tagBody -eq $genericTag -or $tagBody -eq $tag) {
