@@ -36,7 +36,7 @@ jobs:
         shell: pwsh
         run: pyinstaller --clean --noconfirm ClaudeGuard.spec
 
-      - name: Generate release manifest and checksums
+      - name: Generate release manifest
         id: meta
         shell: pwsh
         run: |
@@ -73,7 +73,6 @@ jobs:
           $distDir = (Resolve-Path "dist").Path
           $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
           [System.IO.File]::WriteAllText((Join-Path $distDir "latest.json"), $manifest, $utf8NoBom)
-          [System.IO.File]::WriteAllText((Join-Path $distDir "SHA256SUMS.txt"), "$sha256  ClaudeGuard.exe`n", $utf8NoBom)
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
@@ -83,7 +82,12 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: Claude Guard ${{ steps.meta.outputs.tag }}
           generate_release_notes: true
+          body: |
+            ### 下载说明
+            - 👉 **Windows 用户直接下载 `ClaudeGuard.exe` 运行即可**（单文件免安装，右键或以管理员身份运行可开启全部防泄漏加固功能）。
+            - ℹ️ `latest.json` 为软件内置自动更新使用的校验清单，`Source code` 为 GitHub 自动生成的源码归档，普通用户无需下载。
+
+            ---
           files: |
             dist/ClaudeGuard.exe
             dist/latest.json
-            dist/SHA256SUMS.txt
