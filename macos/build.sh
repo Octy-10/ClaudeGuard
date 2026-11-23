@@ -53,7 +53,7 @@ fi
 codesign --verify --deep --strict "$app"
 for executable in "$content/MacOS/ClaudeGuard" "$content/Frameworks/libClaudeGuardHost.dylib" \
   "$extension/MacOS/ClaudeGuardFilter" "$native/$app_id.settings"; do
-  lipo -verify_arch "$arch" "$executable"
+  lipo "$executable" -verify_arch "$arch"
 done
 "$native/$app_id.settings" status | python -c 'import json, sys; status = json.load(sys.stdin); print(status); sys.exit(0 if status.get("ok") is True else 1)'
 
