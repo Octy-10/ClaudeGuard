@@ -249,26 +249,37 @@ class FirewallAndProbeTests(unittest.TestCase):
     def test_script_wrapper_and_audit_preserve_vm_proxy(self):
         node = shutil.which("node")
         if node is None:
-            self.skipTest("Node.js is required to check the generated Clash probe configuration")
+            self.skipTest("Node.js is required to check the generated Clash configuration")
         script = bridge.OVERRIDE_SCRIPT_PATH.read_text(encoding="utf-8")
         source = """
 const vm = require("node:vm");
-const input = {
+const baseInput = {
   mode: "rule", "allow-lan": true, "mixed-port": 7897,
   proxies: [{name: "test", type: "vless"}, {name: "direct alias", type: "direct"}],
   "proxy-groups": [{name: "Daily", type: "select", proxies: ["test", "DIRECT"]}],
   rules: ["MATCH,Daily"],
 };
+const aiInput = {
+  mode: "rule", "allow-lan": true, "mixed-port": 7897,
+  proxies: [{name: "us-1", type: "vless"}],
+  "proxy-groups": [
+    {name: "🚀节点选择", type: "select", proxies: ["us-1", "DIRECT"]},
+    {name: "🤖AI网站", type: "select", proxies: ["us-1", "DIRECT"]},
+  ],
+  rules: ["MATCH,🚀节点选择"],
+};
 const script = """ + json.dumps(script) + r"""
-const wrapped = "try {\n" + script + "\nJSON.stringify(main(main(input), 'test'))\n} catch (err) { String(err) }";
-console.log(vm.runInNewContext(wrapped, { input }));
+const wrapped = script + "\nJSON.stringify({base: main(main(baseInput), 'test'), ai: main(main(aiInput), 'ai')})";
+console.log(vm.runInNewContext(wrapped, { baseInput, aiInput }));
 """
         proc = subprocess.run([node, "-"], input=source, capture_output=True, check=True, encoding="utf-8")
-        generated = json.loads(proc.stdout)
-        self.assertEqual(clash_config.subscription_probe_issues(generated), [])
-        self.assertEqual(clash_config.tun_dns_issues(generated), [])
+        res = json.loads(proc.stdout)
+        generated = res["base"]
+        ai_generated = res["ai"]
+
         self.assertTrue(generated["allow-lan"])
         self.assertEqual(generated["mixed-port"], 7897)
+        self.assertNotIn("tun", generated)
         self.assertEqual(generated["rules"][-1], "MATCH,Daily")
         self.assertIn("PROCESS-NAME,claude.exe,Daily", generated["rules"])
         self.assertIn("DOMAIN-SUFFIX,challenges.cloudflare.com,Daily", generated["rules"])
@@ -276,11 +287,24 @@ console.log(vm.runInNewContext(wrapped, { input }));
             generated["rules"].index("IP-CIDR,127.0.0.0/8,DIRECT,no-resolve"),
             generated["rules"].index("PROCESS-NAME,claude.exe,Daily"),
         )
-        self.assertEqual(generated["proxy-groups"][1]["proxies"], ["test", "DIRECT"])
-        self.assertEqual(generated["proxy-groups"][0]["proxies"], ["REJECT", "test"])
+        self.assertEqual(len(generated["proxy-groups"]), 1)
+        self.assertIn("PROCESS-NAME,claude.exe,🤖AI网站", ai_generated["rules"])
+        self.assertIn("DOMAIN-SUFFIX,claude.ai,🤖AI网站", ai_generated["rules"])
+
+        audit_cfg = {
+            "mode": "rule",
+            "ipv6": False,
+            "tun": {"enable": True, "auto-route": True, "strict-route": True},
+            "dns": {"enable": True, "ipv6": False},
+            "listeners": [{"name": clash_config.PROBE_INBOUND, "type": "http", "listen": "127.0.0.1", "port": clash_config.PROBE_PORT, "proxy": clash_config.PROBE_GROUP, "users": []}],
+            "proxies": [{"name": "test", "type": "vless"}],
+            "proxy-groups": [{"name": clash_config.PROBE_GROUP, "type": "select", "empty-fallback": "REJECT", "default-selected": "REJECT", "proxies": ["REJECT", "test"]}],
+        }
+        self.assertEqual(clash_config.subscription_probe_issues(audit_cfg), [])
+        self.assertEqual(clash_config.tun_dns_issues(audit_cfg), [])
 
         with (
-            patch.object(doctor, "read_config", return_value=generated),
+            patch.object(doctor, "read_config", return_value=audit_cfg),
             patch.object(doctor, "verify_proxy_listener", return_value=True) as verify,
         ):
             self.assertEqual(doctor._audit_clash_verge_config().level, "PASS")
@@ -288,17 +312,17 @@ console.log(vm.runInNewContext(wrapped, { input }));
 
             for invalid in ("DIRECT", "direct alias", "Daily", "missing"):
                 with self.subTest(invalid=invalid):
-                    generated["proxy-groups"][0]["proxies"] = ["REJECT", invalid]
+                    audit_cfg["proxy-groups"][0]["proxies"] = ["REJECT", invalid]
                     verify.reset_mock()
                     self.assertEqual(doctor._audit_clash_verge_config().level, "WARN")
                     verify.assert_not_called()
 
-            generated["proxy-groups"][0]["proxies"] = ["REJECT", "test"]
-            generated["listeners"][0]["listen"] = "0.0.0.0"
+            audit_cfg["proxy-groups"][0]["proxies"] = ["REJECT", "test"]
+            audit_cfg["listeners"][0]["listen"] = "0.0.0.0"
             self.assertEqual(doctor._audit_clash_verge_config().level, "WARN")
             verify.assert_not_called()
 
-            generated["listeners"][0]["listen"] = "127.0.0.1"
+            audit_cfg["listeners"][0]["listen"] = "127.0.0.1"
             verify.return_value = False
             self.assertEqual(doctor._audit_clash_verge_config().level, "WARN")
 

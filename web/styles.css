@@ -1044,6 +1044,13 @@ body[data-scan="checking"] .hero-claude-bg {
 .score-ring[data-level=medium] { --tone: var(--warning); }
 .score-ring[data-level=high] { --tone: var(--vermilion); }
 .score-ring[data-level=unknown] { --tone: #d4d4d4; }
+.score-ring[data-level=loading] { --tone: var(--obsidian); }
+.purity-ring[data-level=loading] .ring-svg { animation: spin 1.15s linear infinite; }
+.purity-ring[data-level=loading] .ring-bar {
+  stroke-dasharray: 96 260 !important;
+  stroke-dashoffset: 0 !important;
+  transition: none;
+}
 
 .purity-hero {
   display: flex;
@@ -1144,6 +1151,43 @@ body[data-scan="checking"] .hero-claude-bg {
   background: var(--warning-wash);
   color: var(--warning);
   font-size: 12px;
+}
+
+.purity-loading {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 20px 18px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.purity-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--obsidian);
+  flex: none;
+  animation: spin .8s linear infinite;
+}
+.attr-card.is-skeleton {
+  border-top-color: var(--line);
+  pointer-events: none;
+}
+.skel-line {
+  height: 10px;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--raised) 25%, var(--hover) 50%, var(--raised) 75%);
+  background-size: 220% 100%;
+  animation: skelShimmer 1.3s ease-in-out infinite;
+}
+.skel-line.lg { height: 16px; margin: 9px 0 7px; }
+.skel-line.w-45 { width: 45%; }
+.skel-line.w-70 { width: 70%; }
+.skel-line.w-85 { width: 85%; }
+@keyframes skelShimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
 }
 
 /* ---------- 基线诊断列表 ---------- */
@@ -1613,7 +1657,9 @@ button.check-row:hover .check-name { text-decoration: underline; text-underline-
 :root[data-theme="dark"] .help:focus-visible,
 :root[data-theme="dark"] .help.is-open { background: #ffffff; border-color: #ffffff; color: #111111; }
 :root[data-theme="dark"] .ring-track { stroke: #2a2a2a; }
-:root[data-theme="dark"] .score-ring[data-level=low] { --tone: var(--lime); }
+:root[data-theme="dark"] .score-ring[data-level=low],
+:root[data-theme="dark"] .score-ring[data-level=loading] { --tone: var(--lime); }
+:root[data-theme="dark"] .purity-spinner { border-color: #2e2e2e; border-top-color: var(--lime); }
 :root[data-theme="dark"] .grade-badge.low { background: var(--lime); color: var(--lime-ink); }
 :root[data-theme="dark"] .attr-card { border-top-color: #333333; }
 :root[data-theme="dark"] .attr-card.pass { border-top-color: var(--lime); }

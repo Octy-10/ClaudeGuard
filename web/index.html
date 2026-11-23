@@ -338,18 +338,17 @@
     <div class="modal modal-lg">
       <div class="modal-header">
         <div>
-          <h3 id="scriptModalTitle">订阅分流体检脚本</h3>
+          <h3 id="scriptModalTitle">Clash 全局分流覆写脚本（可选）</h3>
           <p class="modal-sub" id="scriptPath">clash-verge-override.js</p>
         </div>
         <button class="icon-close" data-close-modal="scriptModal" type="button" aria-label="关闭">&times;</button>
       </div>
       <div class="modal-steps">
         <ol>
-          <li>打开 Clash Verge → 订阅 → 全局扩展脚本，用完整脚本替换旧内容。</li>
-          <li>保存并重新应用订阅，在 Clash 的 Guard-Probe 组中选一个测试节点。</li>
-          <li>回到 Guard 自检或运行 IP 体检。</li>
+          <li>打开 Clash Verge → 订阅 → 全局扩展脚本，用下方脚本替换原内容并保存。</li>
+          <li>切换任意订阅时，脚本会自动识别订阅中的 AI 分组或主代理组，并置顶 Claude 进程及全部关联域名规则。</li>
+          <li>不再改动 TUN/DNS 参数，也不会新增多余策略组或端口；不配置此脚本同样不影响基础防泄漏检测。</li>
         </ol>
-        <p>探测使用本机端口 17897。VM 可继续使用原局域网代理端口。</p>
       </div>
       <details class="script-preview">
         <summary>预览脚本</summary>

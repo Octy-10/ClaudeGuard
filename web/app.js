@@ -505,7 +505,7 @@
     const purityMeta = $("purityMeta");
     const purityFlag = p.ip && window.renderCountryFlag ? window.renderCountryFlag(p.country_code) : "";
     const locText = [p.country_code, p.country, p.city].filter(Boolean).join(" ");
-    const ipText = `Guard-Probe IP ${p.ip || "—"}${locText ? " · " + locText : ""}`;
+    const ipText = `出口 IP ${p.ip || "—"}${locText ? " · " + locText : ""}`;
     if (purityFlag) {
       purityMeta.innerHTML = `<span class="country-flag is-sm" aria-hidden="true">${purityFlag}</span><span>${escapeHtml(ipText)}</span>`;
     } else {
@@ -606,10 +606,21 @@
     const report = state.data?.report;
     const overall = report?.overall || "";
 
-    // 1. 正在执行的即时任务优先级最高
+    // 1. 正在执行的即时任务优先级最高（逐项区分语义，避免误显示「执行配置中」）
     if (state.purityRunning) return { key: "searching", label: "联网体检中" };
     if (state.pending.has("run_doctor")) return { key: "scanning", label: "巡检扫描中" };
-    if (state.pending.size > 0) return { key: "working", label: "执行配置中" };
+    if (state.pending.has("check_update")) return { key: "searching", label: "检查更新中" };
+    if (state.pending.has("install_update")) return { key: "working", label: "下载更新中" };
+    if (state.pending.has("run_rescue")) return { key: "working", label: "紧急恢复中" };
+    if (state.pending.has("kill_claude_app")) return { key: "working", label: "关闭客户端中" };
+    if (state.pending.has("get_override_script")) return { key: "reading", label: "读取脚本中" };
+    if (state.pending.has("elevate")) return { key: "working", label: "提权重启中" };
+    if (state.pending.has("quit_app")) return { key: "idle", label: "准备退出中" };
+
+    const SILENT_ACTIONS = new Set(["open_author_page", "open_release_page", "open_clash_dir"]);
+    if ([...state.pending].some((m) => !SILENT_ACTIONS.has(m))) {
+      return { key: "working", label: "执行配置中" };
+    }
 
     // 2. 高危红灯异常绝不被页面态或闲置打盹掩盖（仅允许用户主动点击彩蛋临时覆盖）
     if (state.mascotFlash && (state.mascotFlash.priority || (overall !== "red" && !state.scanError))) {
@@ -717,7 +728,34 @@
     syncMascot();
     btn.classList.add("is-spinning");
     if (lbl) lbl.textContent = "检测中…";
-    $("purityMeta").textContent = "正在查询数据源…";
+
+    const purityView = $("purity");
+    if (purityView) purityView.classList.add("is-loading");
+    $("purityRing").dataset.level = "loading";
+    $("purityScoreRing").textContent = "…";
+    $("purityScoreRing").dataset.target = "--";
+    $("purityGrade").className = "grade-badge";
+    $("purityGrade").textContent = "…";
+    $("purityVerdictTitle").textContent = "正在检测当前出口纯净度…";
+    $("purityVerdictDetail").textContent = "正在并发查询 IPPure 风险评分与出口归属地，请稍候…";
+    $("purityMeta").textContent = "正在连接检测数据源…";
+    $("purityAsnFooter").textContent = "";
+    $("purityCheckedAt").textContent = "";
+    $("purityCheckedAtInline").textContent = "实时检测中…";
+    $("purityScoreNum").textContent = "检测中…";
+    $("purityErrors").classList.add("hidden");
+    $("purityAttrGrid").innerHTML = Array.from({ length: 4 }, () => `
+      <div class="attr-card is-skeleton" aria-hidden="true">
+        <div class="skel-line w-45"></div>
+        <div class="skel-line w-70 lg"></div>
+        <div class="skel-line w-85"></div>
+      </div>`).join("");
+    $("puritySignals").innerHTML = `
+      <div class="purity-loading" role="status" aria-live="polite">
+        <span class="purity-spinner" aria-hidden="true"></span>
+        <span>正在通过当前通道实时请求 IPPure 与出口地理数据库…</span>
+      </div>`;
+
     try {
       const res = await window.pywebview.api.check_ip_purity();
       if (res && typeof res === "object") {
@@ -727,9 +765,11 @@
         flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "体检未通过" : "体检已完成", 3200);
       }
     } catch (err) {
+      resetPurityView("体检请求异常，请重试");
       flashMascot("error", "体检出错啦", 3200);
       toast(`纯净度体检失败：${err}`, "error");
     } finally {
+      if (purityView) purityView.classList.remove("is-loading");
       state.purityRunning = false;
       btn.disabled = false;
       btn.classList.remove("is-spinning");
@@ -854,8 +894,24 @@
       if (res && res.message && (method !== "get_override_script" || !res.ok)) {
         toast(res.message, res.ok === false ? "error" : "ok");
       }
-      if (method !== "run_doctor" && method !== "get_override_script" && method !== "open_author_page" && res) {
-        flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "配置未完成" : "配置已生效", 2800);
+      const SKIP_FLASH = new Set([
+        "run_doctor", "get_override_script", "open_author_page",
+        "open_release_page", "open_clash_dir", "elevate", "quit_app",
+      ]);
+      if (res && !SKIP_FLASH.has(method)) {
+        if (method === "check_update") {
+          if (res.ok === false) flashMascot("error", "检查更新失败", 2800);
+          else if (res.update?.available) flashMascot("done", "发现新版本", 3000);
+          else flashMascot("done", "已是最新版", 2600);
+        } else if (method === "install_update") {
+          flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "更新未完成" : "即将重启更新", 2800);
+        } else if (method === "run_rescue") {
+          flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "恢复未完成" : "已恢复默认", 2800);
+        } else if (method === "kill_claude_app") {
+          flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "未完成关闭" : "已安全关闭", 2800);
+        } else {
+          flashMascot(res.ok === false ? "error" : "done", res.ok === false ? "配置未完成" : "配置已生效", 2800);
+        }
       }
       if (res && typeof res === "object" && "report" in res) renderApiState(res);
       return res;
