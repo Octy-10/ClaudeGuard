@@ -16,10 +16,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .clash_config import PROBE_PORT, read_config, subscription_probe_issues, tun_dns_issues
 from .config import (
+    ACCELERATOR_PROCESSES,
     CLASH_VERGE_RUNTIME_YAML,
-    CONFLICT_PROCESSES,
     IANA_TO_WINDOWS_TZ,
+    KNOWN_PROXY_CLIENTS,
     LOCKED_DNS_SERVERS,
+    PROXY_CLIENT_FAMILIES,
+    PROXY_CORE_EXECUTABLES,
     GuardConfig,
 )
 from .firewall import KillSwitchStatus, get_status as get_firewall_status
@@ -46,6 +49,7 @@ class CheckItem:
 
 
 PROBE_PATH = "clash-probe-listener"
+TUN_PATH = "system-tun"
 
 
 @dataclass
@@ -99,7 +103,8 @@ class DoctorReport:
         return asdict(self)
 
 
-def query_exit_info(proxy_port: int = PROBE_PORT) -> ExitInfo:
+def query_exit_info(proxy_port: int | None = None, path: str | None = None) -> ExitInfo:
+    resolved_path = path if path is not None else (PROBE_PATH if proxy_port is not None else TUN_PATH)
     data, error = fetch_ip_info(proxy_port)
     if not data:
         return ExitInfo(error=error)
@@ -112,7 +117,7 @@ def query_exit_info(proxy_port: int = PROBE_PORT) -> ExitInfo:
         isp=str(data.get("org") or ""),
         asn=str(data.get("asn") or ""),
         timezone=str(data.get("timezone") or ""),
-        path=PROBE_PATH,
+        path=resolved_path,
     )
 
 
@@ -122,7 +127,7 @@ _IPV6_PROBE_URLS = (
 )
 
 
-def _probe_ipv6_egress(proxy_port: int) -> Optional[str]:
+def _probe_ipv6_egress(proxy_port: int | None = None) -> Optional[str]:
     """Return IPv6, an empty string for observed IPv4, or None for unknown."""
     for url in _IPV6_PROBE_URLS:
         data, _ = fetch_json(url, timeout=5.0, proxy_port=proxy_port)
@@ -136,31 +141,56 @@ def _probe_ipv6_egress(proxy_port: int) -> Optional[str]:
     return None
 
 
+def _detect_active_proxy_clients(procs_lower: set[str]) -> Tuple[List[str], List[str]]:
+    """识别当前运行的代理客户端及其独立家族（同客户端壳与内核不重复计数）。"""
+    labels: List[str] = []
+    shell_families: Dict[str, str] = {}
+    for proc in sorted(procs_lower):
+        if proc in PROXY_CLIENT_FAMILIES:
+            fam = PROXY_CLIENT_FAMILIES[proc]
+            label = KNOWN_PROXY_CLIENTS.get(proc, proc)
+            shell_families.setdefault(fam, label)
+            if label not in labels:
+                labels.append(label)
+
+    running_cores = [proc for proc in sorted(procs_lower) if proc in PROXY_CORE_EXECUTABLES]
+    for core in running_cores:
+        label = KNOWN_PROXY_CLIENTS.get(core, core)
+        if label not in labels:
+            labels.append(label)
+
+    distinct_families = list(shell_families.values())
+    if not shell_families:
+        distinct_families.extend(KNOWN_PROXY_CLIENTS.get(core, core) for core in running_cores)
+    elif len(running_cores) > 1:
+        # 存在多个并行的底层内核（如 xray 与 sing-box 同时运行）
+        distinct_families.extend(KNOWN_PROXY_CLIENTS.get(core, core) for core in running_cores[1:])
+
+    return labels, distinct_families
+
+
 def _check_tun(procs_lower: set[str], tuns_raw: List[Dict[str, Any]]) -> Tuple[CheckItem, bool, bool]:
     mihomo_running = "verge-mihomo.exe" in procs_lower or "verge-mihomo-alpha.exe" in procs_lower
     up_tuns = [t for t in tuns_raw if str(t.get("status", "")).lower() == "up"]
     tun_up = len(up_tuns) > 0
+    client_labels, _ = _detect_active_proxy_clients(procs_lower)
 
-    if mihomo_running and tun_up:
+    if tun_up:
         tun_names = ", ".join(str(t.get("name")) for t in up_tuns)
+        client_hint = f"（已识别：{' / '.join(client_labels[:2])}）" if client_labels else ""
         return (
-            CheckItem("tun", "Clash Verge 与 TUN 网卡", "PASS", f"verge-mihomo 运行中，TUN 网卡在线（{tun_names}）"),
+            CheckItem("tun", "TUN 虚拟网卡", "PASS", f"TUN 虚拟网卡在线（{tun_names}）{client_hint}"),
             mihomo_running,
             tun_up,
         )
 
-    reason = []
-    if not mihomo_running:
-        reason.append("verge-mihomo 未运行")
-    if not tun_up:
-        reason.append("Mihomo TUN 虚拟网卡未启用")
     return (
         CheckItem(
             "tun",
-            "Clash Verge 与 TUN 网卡",
+            "TUN 虚拟网卡",
             "FAIL",
-            "；".join(reason),
-            "请确保 Clash Verge 已启动并打开 TUN（虚拟网卡）模式。",
+            "未检测到活跃的 TUN 虚拟网卡",
+            "请在代理软件（Clash Verge / FlClash / Mihomo Party / v2rayN 等）中开启 TUN（虚拟网卡）模式。",
         ),
         mihomo_running,
         tun_up,
@@ -168,22 +198,26 @@ def _check_tun(procs_lower: set[str], tuns_raw: List[Dict[str, Any]]) -> Tuple[C
 
 
 def _check_exit_ip(exit_info: ExitInfo, cfg: GuardConfig) -> CheckItem:
-    name = "测试出口 IP"
+    name = "出口 IP 状态"
     if exit_info.error or not exit_info.ip:
         return CheckItem(
-            "exit_ip", name, "UNKNOWN", "未获得 Guard-Probe 出口 IP",
-            exit_info.error or "请检查所选节点能否连通",
+            "exit_ip", name, "UNKNOWN", "未获得出口 IP",
+            exit_info.error or "请检查代理节点连通性",
         )
 
-    detail = "本次结果覆盖 Guard-Probe 所选节点。Claude 的实际分流可在 Clash「连接」页核对。"
+    detail = (
+        "通过 Clash Guard-Probe 回环通道核验。"
+        if exit_info.path == PROBE_PATH
+        else "通过当前活跃 TUN 通道实时核验。"
+    )
     if cfg.monitored_probe_ip and exit_info.ip != cfg.monitored_probe_ip:
         return CheckItem(
-            "exit_ip", name, "WARN",
-            f"测试出口发生漂移：当前 {exit_info.ip}，监控基准 {cfg.monitored_probe_ip}",
+            "exit_ip", name, "FAIL",
+            f"出口 IP 发生漂移：当前 {exit_info.ip}，监控基准 {cfg.monitored_probe_ip}",
             detail,
         )
     location = " ".join(part for part in (exit_info.country_code, exit_info.country) if part)
-    summary = f"Guard-Probe 出口为 {exit_info.ip}" + (f"（{location}）" if location else "")
+    summary = f"当前出口为 {exit_info.ip}" + (f"（{location}）" if location else "")
     return CheckItem("exit_ip", name, "PASS", summary, detail)
 
 
@@ -323,7 +357,10 @@ def check_probe_route() -> str:
 
 
 def _check_conflicts(procs_lower: set[str], old_svc: str, old_run: bool) -> CheckItem:
-    found_conflicts = [f"{label} ({proc})" for proc, label in CONFLICT_PROCESSES.items() if proc in procs_lower]
+    found_conflicts = [f"{label} ({proc})" for proc, label in ACCELERATOR_PROCESSES.items() if proc in procs_lower]
+    _, distinct_families = _detect_active_proxy_clients(procs_lower)
+    if len(distinct_families) >= 2:
+        found_conflicts.append(f"同时运行多个代理软件：{'、'.join(distinct_families)}")
     residuals = []
     if old_svc:
         residuals.append(f"残留系统服务 cc-hahaeasy ({old_svc})")
@@ -333,14 +370,14 @@ def _check_conflicts(procs_lower: set[str], old_svc: str, old_run: bool) -> Chec
     all_warn = found_conflicts + residuals
     if all_warn:
         return CheckItem("conflicts", "冲突代理与旧软件残留", "WARN", f"检测到 {len(all_warn)} 项冲突或残留", "；".join(all_warn))
-    return CheckItem("conflicts", "冲突代理与旧软件残留", "PASS", "无冲突代理/VPN，cc-hahaeasy 已清理干净")
+    return CheckItem("conflicts", "冲突代理与旧软件残留", "PASS", "无冲突代理、加速器或旧软件残留")
 
 
 # ----------------------------------------------------------------------
 # 并发自检主入口
 # ----------------------------------------------------------------------
 def run_doctor(cfg: GuardConfig) -> DoctorReport:
-    """并发执行完整 9 项防泄漏深度自检并返回结构化报告。"""
+    """并发执行通用 TUN 防泄漏自检并返回结构化报告（已配置 Guard-Probe 时优先复用）。"""
     t0 = time.perf_counter()
 
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="DoctorProbe") as pool:
@@ -349,43 +386,59 @@ def run_doctor(cfg: GuardConfig) -> DoctorReport:
 
         rtc = get_webrtc_policy_state()
         cur_tz = get_current_windows_timezone()
-        clash_item = _audit_clash_verge_config()
+        clash_item = _audit_clash_verge_config() if CLASH_VERGE_RUNTIME_YAML.exists() else None
         old_run = _check_old_hklm_run()
 
-        if clash_item.level == "PASS":
-            fut_exit = pool.submit(query_exit_info, PROBE_PORT)
-            fut_ipv6 = pool.submit(_probe_ipv6_egress, PROBE_PORT)
-            exit_info = fut_exit.result()
-            if not exit_info.ip:
-                reason = f"（{exit_info.error}）" if exit_info.error else ""
-                exit_info.error = f"Guard-Probe 查询失败{reason}，请确认已在 Clash 选择可用节点"
-            leaked_v6 = fut_ipv6.result()
-        else:
-            exit_info = ExitInfo(error=clash_item.summary)
-            leaked_v6 = None
         snapshot = fut_snapshot.result()
         fw = fut_firewall.result()
 
-    procs_lower = {str(p).lower() for p in normalize_list(snapshot.get("procs"))}
-    claude_proc_count = int(snapshot.get("claude_procs") or 0)
-    tuns_raw = [t for t in normalize_list(snapshot.get("tuns")) if isinstance(t, dict)]
-    ipv6_states = [s for s in normalize_list(snapshot.get("ipv6")) if isinstance(s, dict)]
-    dns_states = [d for d in normalize_list(snapshot.get("dns")) if isinstance(d, dict)]
+        procs_lower = {str(p).lower() for p in normalize_list(snapshot.get("procs"))}
+        claude_proc_count = int(snapshot.get("claude_procs") or 0)
+        tuns_raw = [t for t in normalize_list(snapshot.get("tuns")) if isinstance(t, dict)]
+        ipv6_states = [s for s in normalize_list(snapshot.get("ipv6")) if isinstance(s, dict)]
+        dns_states = [d for d in normalize_list(snapshot.get("dns")) if isinstance(d, dict)]
 
-    tun_item, mihomo_running, tun_up = _check_tun(procs_lower, tuns_raw)
-    if snapshot.get("error"):
-        tun_item = CheckItem("tun", "Clash Verge 与 TUN 网卡", "UNKNOWN", "无法获取系统网络快照", snapshot["error"])
+        tun_item, mihomo_running, tun_up = _check_tun(procs_lower, tuns_raw)
+        if snapshot.get("error"):
+            tun_item = CheckItem("tun", "TUN 虚拟网卡", "UNKNOWN", "无法获取系统网络快照", snapshot["error"])
+
+        clash_probe_ok = clash_item is not None and clash_item.level == "PASS"
+        if clash_probe_ok:
+            probe_port: Optional[int] = PROBE_PORT
+            probe_path = PROBE_PATH
+        elif tun_up:
+            probe_port = None
+            probe_path = TUN_PATH
+        else:
+            probe_port = None
+            probe_path = ""
+
+        if probe_path:
+            fut_exit = pool.submit(query_exit_info, probe_port, probe_path)
+            fut_ipv6 = pool.submit(_probe_ipv6_egress, probe_port)
+            exit_info = fut_exit.result()
+            if not exit_info.ip:
+                reason = f"（{exit_info.error}）" if exit_info.error else ""
+                exit_info.error = f"出口 IP 查询失败{reason}，请检查当前代理节点能否连通"
+            leaked_v6 = fut_ipv6.result()
+        else:
+            exit_info = ExitInfo(error="请先在代理软件中开启 TUN（虚拟网卡）模式")
+            leaked_v6 = None
+
     exit_item = _check_exit_ip(exit_info, cfg)
     fw_item = _check_killswitch(fw)
     dns_item, dns_locked, dns_summary = _evaluate_physical_dns(dns_states)
     ipv6_item, ipv6_physical_disabled = _evaluate_ipv6(ipv6_states, leaked_v6)
     webrtc_item, webrtc_ok = _check_webrtc(rtc)
     tz_item, expected_tz, tz_matched = _check_timezone(cur_tz, exit_info.timezone)
-    if clash_item.level == "PASS":
-        ipv6_item.detail = "\n".join(filter(None, (ipv6_item.detail, "代理侧探测只覆盖 Guard-Probe 所选节点。")))
+    if clash_probe_ok:
+        ipv6_item.detail = "\n".join(filter(None, (ipv6_item.detail, "代理侧探测覆盖 Guard-Probe 所选节点。")))
     conflict_item = _check_conflicts(procs_lower, str(snapshot.get("old_svc") or ""), old_run)
 
-    items = [tun_item, exit_item, fw_item, dns_item, ipv6_item, webrtc_item, tz_item, clash_item, conflict_item]
+    items = [tun_item, exit_item, fw_item, dns_item, ipv6_item, webrtc_item, tz_item]
+    if clash_probe_ok and clash_item is not None:
+        items.append(clash_item)
+    items.append(conflict_item)
     levels = {i.level for i in items}
     overall = "red" if "FAIL" in levels else ("yellow" if levels & {"WARN", "UNKNOWN"} else "green")
 

@@ -51,7 +51,7 @@
     <details class="tool-menu" id="toolMenu">
       <summary aria-label="工具菜单" title="工具菜单"><svg class="icon" aria-hidden="true"><use href="#i-more"/></svg><span class="red-dot menu-dot" id="toolMenuDot" hidden></span></summary>
       <div class="menu-items">
-        <button id="btnOverride" type="button"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>Clash 覆写脚本</button>
+        <button id="btnOverride" type="button"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>Clash 覆写脚本（可选）</button>
         <button id="btnRescue" type="button"><svg class="icon" aria-hidden="true"><use href="#i-rescue"/></svg>紧急恢复</button>
         <button id="btnCheckUpdate" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>检查更新</span><span class="menu-badge" id="menuUpdateBadge" hidden>NEW</span></button>
         <button id="btnAbout" type="button"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>关于与免责声明</button>
@@ -158,19 +158,19 @@
             </header>
             <div class="identity-current">
               <div>
-                <span class="id-k">Guard-Probe 测试出口 IP</span>
+                <span class="id-k">当前代理出口 IP</span>
                 <div class="ip-row">
                   <span class="country-flag" id="exitFlag" hidden aria-hidden="true"></span>
                   <strong class="ip" id="exitIp">—</strong>
                 </div>
                 <p id="exitLoc"></p>
-                <small class="exit-note">Claude 实际出口未核实</small>
+                <small class="exit-note" id="exitNote">通过当前活跃 TUN 通道实时核验</small>
               </div>
-              <button class="btn btn-ghost" id="btnConfigureProbe" type="button">配置出口检测<svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></button>
+              <button class="btn btn-ghost" id="btnConfigureProbe" type="button" hidden>Clash 覆写脚本<svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></button>
             </div>
             <div class="lock-strip" id="lockStrip">
               <div class="lock-copy">
-                <strong>测试出口漂移监控</strong>
+                <strong>出口 IP 漂移锁定监控</strong>
                 <span class="lock-chip" id="lockChip">等待读取监控状态</span>
               </div>
               <button class="btn btn-secondary" id="btnLockIp" type="button" disabled><span id="btnLockIpLabel">开始监控</span></button>
@@ -232,8 +232,8 @@
               <div class="tile" data-ctrl="timezone">
                 <span class="tile-icon"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></span>
                 <div class="tile-copy">
-                  <strong>系统时区<span class="help" tabindex="0" role="note" aria-label="说明：系统时区对齐" data-tip="按 Guard-Probe 测试出口的时区调整系统时区，并保存原设置用于恢复。">?</span></strong>
-                  <small id="ctrlTzSub">与测试出口时区对齐</small>
+                  <strong>系统时区<span class="help" tabindex="0" role="note" aria-label="说明：系统时区对齐" data-tip="按当前代理出口 IP 的时区调整系统时区，并保存原设置用于恢复。">?</span></strong>
+                  <small id="ctrlTzSub">与当前出口时区对齐</small>
                 </div>
                 <div class="row-actions"><button class="chip-btn" id="btnAlignTz" type="button">对齐</button><button class="chip-btn" id="btnRestoreTz" type="button">恢复</button></div>
               </div>
@@ -255,7 +255,7 @@
         <header class="view-title">
           <div class="view-heading">
             <h1>IP 体检</h1>
-            <p>查看测试出口的 IP 风险和网络属性。</p>
+            <p>查看当前代理出口的 IP 风险和网络属性。</p>
           </div>
           <button class="btn btn-primary" id="btnRunPurity" type="button"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg><span id="btnRunPurityLabel">开始体检</span></button>
         </header>

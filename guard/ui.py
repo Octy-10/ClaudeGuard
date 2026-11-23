@@ -395,6 +395,7 @@ class GuardApp:
                 private_mode=False,
                 storage_path=str(wv_dir),
                 debug=False,
+                icon=str(ICON_FILE) if ICON_FILE.exists() else None,
             )
         finally:
             self._bridge._stop_watchdog()

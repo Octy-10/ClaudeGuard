@@ -323,7 +323,7 @@ console.log(vm.runInNewContext(wrapped, { input }));
             response.status = 200
             response.read.return_value = b'{"ip":"192.0.2.5"}'
             self.assertEqual(net.fetch_ip_info(7897)[0]["ip"], "192.0.2.5")
-            connect.assert_called_once_with("127.0.0.1", 7897, timeout=6.0)
+            connect.assert_called_once_with("127.0.0.1", 7897, timeout=6.0, context=net.build_ssl_context())
             connection.set_tunnel.assert_called_once_with("ipapi.co", 443)
             self.assertEqual(connection.request.call_args.args[:2], ("GET", "/json/"))
 

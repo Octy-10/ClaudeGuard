@@ -36,27 +36,69 @@ ANTHROPIC_CIDRS_V6: List[str] = [
 # 物理网卡锁 DNS 时写入的安全境外 DNS（防止回落至本地运营商 DNS）
 LOCKED_DNS_SERVERS: List[str] = ["1.1.1.1", "8.8.8.8"]
 
-# 常见冲突代理/VPN 进程（不含用户当前使用的 clash-verge / verge-mihomo）
-CONFLICT_PROCESSES: Dict[str, str] = {
-    "cc-hahaeasy-daemon.exe": "cc-hahaeasy 守护服务（残留）",
-    "mihomo.exe": "独立 Mihomo 内核",
-    "v2rayn.exe": "v2rayN",
-    "v2ray.exe": "V2Ray 内核",
-    "xray.exe": "Xray 内核",
-    "sing-box.exe": "sing-box",
+# 主流代理客户端进程与其所属客户端家族（同家族的壳与内核同时运行不视为冲突）
+KNOWN_PROXY_CLIENTS: Dict[str, str] = {
+    "verge-mihomo.exe": "Clash Verge (Mihomo)",
+    "verge-mihomo-alpha.exe": "Clash Verge (Mihomo Alpha)",
+    "clash-verge.exe": "Clash Verge",
+    "mihomo.exe": "Mihomo 内核",
     "flclash.exe": "FlClash",
     "mihomo-party.exe": "Mihomo Party",
     "clash-nyanpasu.exe": "Clash Nyanpasu",
     "clash for windows.exe": "Clash for Windows",
+    "v2rayn.exe": "v2rayN",
+    "v2ray.exe": "V2Ray 内核",
+    "xray.exe": "Xray 内核",
+    "sing-box.exe": "sing-box",
+    "hiddify.exe": "Hiddify",
+    "nekoray.exe": "Nekoray",
+    "nekobox.exe": "NekoBox",
     "warp-svc.exe": "Cloudflare WARP",
+    "tailscaled.exe": "Tailscale",
+    "mullvad-daemon.exe": "Mullvad VPN",
+    "nordvpn-service.exe": "NordVPN",
+    "protonvpnservice.exe": "ProtonVPN",
+}
+
+PROXY_CLIENT_FAMILIES: Dict[str, str] = {
+    "verge-mihomo.exe": "clash-verge",
+    "verge-mihomo-alpha.exe": "clash-verge",
+    "clash-verge.exe": "clash-verge",
+    "flclash.exe": "flclash",
+    "mihomo-party.exe": "mihomo-party",
+    "clash-nyanpasu.exe": "clash-nyanpasu",
+    "clash for windows.exe": "cfw",
+    "v2rayn.exe": "v2rayn",
+    "hiddify.exe": "hiddify",
+    "nekoray.exe": "nekobox",
+    "nekobox.exe": "nekobox",
+    "warp-svc.exe": "warp",
+    "tailscaled.exe": "tailscale",
+    "mullvad-daemon.exe": "mullvad",
+    "nordvpn-service.exe": "nordvpn",
+    "protonvpnservice.exe": "protonvpn",
+}
+
+PROXY_CORE_EXECUTABLES: Dict[str, str] = {
+    "mihomo.exe": "core:mihomo",
+    "v2ray.exe": "core:v2ray",
+    "xray.exe": "core:xray",
+    "sing-box.exe": "core:sing-box",
+}
+
+# 游戏加速器与已知旧版残留（始终视为路由/规则冲突风险）
+ACCELERATOR_PROCESSES: Dict[str, str] = {
+    "cc-hahaeasy-daemon.exe": "cc-hahaeasy 守护服务（残留）",
     "uu.exe": "网易 UU 加速器",
     "leigod.exe": "雷神加速器",
     "xunyou.exe": "迅游加速器",
     "qiyou.exe": "奇游加速器",
-    "nordvpn-service.exe": "NordVPN",
-    "protonvpnservice.exe": "ProtonVPN",
-    "mullvad-daemon.exe": "Mullvad VPN",
-    "tailscaled.exe": "Tailscale",
+}
+
+# 保留历史导出字典名以兼容旧引用
+CONFLICT_PROCESSES: Dict[str, str] = {
+    **ACCELERATOR_PROCESSES,
+    **{k: v for k, v in KNOWN_PROXY_CLIENTS.items() if k not in ("verge-mihomo.exe", "verge-mihomo-alpha.exe", "clash-verge.exe")},
 }
 
 # 常用 IANA 时区 -> Windows tzutil 时区 ID 映射

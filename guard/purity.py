@@ -45,7 +45,7 @@ class PurityReport:
         return asdict(self)
 
 
-def _fetch_ippure(proxy_port: int) -> tuple[dict | None, str]:
+def _fetch_ippure(proxy_port: int | None = None) -> tuple[dict | None, str]:
     data, error = fetch_json("https://my.ippure.com/v1/info", proxy_port=proxy_port)
     if data and canonical_ip(data.get("ip")):
         return data, ""
@@ -111,30 +111,30 @@ def evaluate_purity(
         report.signals.append(PuritySignal("匿名代理库", "命中代理标记", "warn"))
 
     if primary_ip and secondary_ip and primary_ip != secondary_ip:
-        report.errors.append("两个数据源观察到不同出口，请确认测试节点后重试")
+        report.errors.append("两个数据源观察到不同出口，请确认当前代理节点后重试")
     if not primary_ip or primary_ip != secondary_ip or fraud_score is None:
         report.verdict_title = "证据不足，暂无法评级"
         report.verdict_detail = "评级需要两处探测确认同一出口和有效的 IPPure 风险分。"
     elif fraud_score > 75 or risk_points >= 55:
         report.grade, report.risk_level = "D", "high"
-        report.verdict_title = "测试节点网络风险较高"
+        report.verdict_title = "当前出口节点网络风险较高"
     elif risk_points >= 18:
         report.grade, report.risk_level = ("C" if risk_points >= 35 else "B"), "medium"
-        report.verdict_title = "测试节点有风险标记"
+        report.verdict_title = "当前出口节点有风险标记"
     else:
         report.grade = "A+" if risk_points == 0 and report.is_residential is True and report.is_broadcast is False else "A"
         report.risk_level = "low"
-        report.verdict_title = "测试节点网络风险较低"
+        report.verdict_title = "当前出口节点网络风险较低"
     if report.risk_level != "unknown":
-        report.verdict_detail = "评级来自 IPPure 和 ipapi.co。Claude 实际出口未核实。"
+        report.verdict_detail = "评级来自 IPPure 和 ipapi.co。"
     return report
 
 
-def run_purity_check() -> PurityReport:
+def run_purity_check(proxy_port: int | None = PROBE_PORT) -> PurityReport:
     start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="PurityProbe") as pool:
-        ippure = pool.submit(_fetch_ippure, PROBE_PORT)
-        ipapi = pool.submit(fetch_ip_info, PROBE_PORT)
+        ippure = pool.submit(_fetch_ippure, proxy_port)
+        ipapi = pool.submit(fetch_ip_info, proxy_port)
         primary, primary_error = ippure.result()
         secondary, secondary_error = ipapi.result()
     errors = [error for error in (primary_error, secondary_error) if error]

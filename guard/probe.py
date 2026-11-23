@@ -19,8 +19,19 @@ INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 ERROR_BUFFER_OVERFLOW = 111
 GAA_FLAG_FAST_MINIMAL = 0x000F  # SKIP_UNICAST|ANYCAST|MULTICAST|DNS_SERVER
 IF_OPER_STATUS_UP = 1
-_TUN_NAME_RE = re.compile(r"Mihomo|Clash", re.IGNORECASE)
-_TUN_DESC_RE = re.compile(r"Wintun|Meta Tunnel|Mihomo", re.IGNORECASE)
+IF_TYPE_SOFTWARE_LOOPBACK = 24
+_TUN_NAME_PATTERN = (
+    r"Mihomo|Clash|FlClash|sing-?box|sing-?tun|v2ray|xray|WireGuard|Wintun|"
+    r"\btun\d*\b|Neko|Hiddify|WARP|Tailscale|Mullvad|Proton"
+)
+_TUN_DESC_PATTERN = (
+    r"Wintun|Meta Tunnel|Mihomo|sing-?tun|WireGuard|TAP-Windows|"
+    r"CloudflareWARP|Tailscale|\btun\d*\b"
+)
+_TUN_EXCLUDE_PATTERN = r"Teredo|Loopback|WAN Miniport|Hyper-V|VMware|VirtualBox|Kernel Debug"
+_TUN_NAME_RE = re.compile(_TUN_NAME_PATTERN, re.IGNORECASE)
+_TUN_DESC_RE = re.compile(_TUN_DESC_PATTERN, re.IGNORECASE)
+_TUN_EXCLUDE_RE = re.compile(_TUN_EXCLUDE_PATTERN, re.IGNORECASE)
 
 
 class _PROCESSENTRY32W(ctypes.Structure):
@@ -102,7 +113,7 @@ def _fast_list_process_names() -> set[str]:
 
 
 def _fast_check_tun_up() -> Tuple[bool, List[str]]:
-    """纯 Win32 GetAdaptersAddresses 检查 Mihomo/Wintun 虚拟网卡在线状态（~2ms，零子进程）。"""
+    """纯 Win32 GetAdaptersAddresses 检查主流代理 TUN 虚拟网卡在线状态（~2ms，零子进程）。"""
     buf_len = wintypes.ULONG(32768)
     for _ in range(3):
         buf = ctypes.create_string_buffer(buf_len.value)
@@ -114,7 +125,12 @@ def _fast_check_tun_up() -> Tuple[bool, List[str]]:
                 node = _IP_ADAPTER_ADDRESSES_MIN.from_address(ptr)
                 fname = node.FriendlyName or ""
                 desc = node.Description or ""
-                if (_TUN_NAME_RE.search(fname) or _TUN_DESC_RE.search(desc)) and node.OperStatus == IF_OPER_STATUS_UP:
+                if (
+                    node.IfType != IF_TYPE_SOFTWARE_LOOPBACK
+                    and not (_TUN_EXCLUDE_RE.search(fname) or _TUN_EXCLUDE_RE.search(desc))
+                    and (_TUN_NAME_RE.search(fname) or _TUN_DESC_RE.search(desc))
+                    and node.OperStatus == IF_OPER_STATUS_UP
+                ):
                     up_names.append(fname or desc)
                 ptr = node.Next
             return len(up_names) > 0, up_names
@@ -211,7 +227,8 @@ def probe_system_snapshot() -> Dict[str, Any]:
         "}).Count;"
         "$allNet = @(Get-NetAdapter);"
         "$tuns = @($allNet | Where-Object { "
-        "  $_.Name -match 'Mihomo|Clash' -or $_.InterfaceDescription -match 'Wintun|Meta Tunnel|Mihomo' "
+        f"  ($_.Name -match '{_TUN_NAME_PATTERN}' -or $_.InterfaceDescription -match '{_TUN_DESC_PATTERN}') -and "
+        f"  ($_.Name -notmatch '{_TUN_EXCLUDE_PATTERN}' -and $_.InterfaceDescription -notmatch '{_TUN_EXCLUDE_PATTERN}') "
         "} | ForEach-Object { [pscustomobject]@{ name=[string]$_.Name; status=[string]$_.Status; desc=[string]$_.InterfaceDescription } });"
         f"$phys = @($allNet | Where-Object {{ {PHYSICAL_ADAPTER_FILTER} }});"
         "$ipv6 = @($phys | ForEach-Object { "

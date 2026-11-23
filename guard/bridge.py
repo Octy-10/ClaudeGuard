@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, Optional
 
 from . import __version__
+from .clash_config import PROBE_PORT
 from .config import (
     APP_NAME,
     CLASH_VERGE_DIR,
@@ -29,7 +30,7 @@ from .config import (
     load_config,
     save_config,
 )
-from .doctor import PROBE_PATH, DoctorReport, check_probe_route, run_doctor
+from .doctor import PROBE_PATH, TUN_PATH, DoctorReport, check_probe_route, run_doctor
 from .firewall import disable_killswitch, enable_killswitch
 from .hardening import (
     align_timezone_to_iana,
@@ -48,7 +49,7 @@ from .hardening import (
     set_autostart_enabled,
     StepResult,
 )
-from .probe import probe_fast_local_health
+from .probe import _fast_check_tun_up, probe_fast_local_health
 from .purity import PurityReport, run_purity_check
 from .sysutil import get_bundle_root, is_admin, relaunch_as_admin, system_change_lock
 from .updater import (
@@ -192,10 +193,8 @@ class GuardBridge:
                 try:
                     fast = probe_fast_local_health()
                     faults = []
-                    if not fast["mihomo_running"]:
-                        faults.append("verge-mihomo 已退出")
                     if not fast["tun_up"]:
-                        faults.append("Mihomo TUN 虚拟网卡已断开")
+                        faults.append("TUN 虚拟网卡已断开")
                     fast_fault_detected = bool(faults)
                     if settings.protection_enabled and fast["fw_disabled_hint"]:
                         faults.append("重新核对防火墙档位：" + "、".join(fast["fw_disabled_hint"]))
@@ -361,8 +360,8 @@ class GuardBridge:
                 except Exception as exc:
                     self._append_log("error", f"开启监控前巡检失败：{exc}")
                     return self._build_payload(ok=False, message="未能核实 Clash 出口 IP，请重新巡检")
-                if not exit_info.ip or exit_info.path != PROBE_PATH:
-                    return self._build_payload(ok=False, message="请先取得 Guard-Probe 的测试出口 IP")
+                if not exit_info.ip or exit_info.path not in (PROBE_PATH, TUN_PATH):
+                    return self._build_payload(ok=False, message="请先完成一次自检并取得有效出口 IP")
             with system_change_lock() as acquired:
                 if not acquired or self._stop_event.is_set():
                     return self._build_payload(ok=False, message="系统变更暂不可用，请稍后重试")
@@ -390,8 +389,8 @@ class GuardBridge:
     def align_timezone(self) -> Dict[str, Any]:
         def align():
             report = self._last_report
-            if not report or report.exit_info.path != PROBE_PATH or not report.exit_info.timezone:
-                return False, "尚未获取 Guard-Probe 的测试出口时区，请先执行自检"
+            if not report or report.exit_info.path not in (PROBE_PATH, TUN_PATH) or not report.exit_info.timezone:
+                return False, "尚未获取出口 IP 时区，请先执行自检"
             return align_timezone_to_iana(report.exit_info.timezone)
 
         return self._apply_setting("对齐系统时区", align)
@@ -440,16 +439,23 @@ class GuardBridge:
             return self._build_payload(ok=ok, message=msg)
 
     def check_ip_purity(self) -> Dict[str, Any]:
-        """按核实的入口执行 HTTPS 体检。"""
+        """按已核实回环入口或通用 TUN 通道执行 HTTPS 体检。"""
         with self._purity_lock:
             error = check_probe_route()
-            if error:
-                self._last_purity = None
-                return self._build_payload(ok=False, message=error)
-            purity = run_purity_check()
+            if not error:
+                purity = run_purity_check(PROBE_PORT)
+            else:
+                tun_up, _ = _fast_check_tun_up()
+                if not tun_up:
+                    self._last_purity = None
+                    return self._build_payload(
+                        ok=False,
+                        message="请先在代理软件中开启 TUN 虚拟网卡后再进行 IP 体检",
+                    )
+                purity = run_purity_check(None)
             self._last_purity = purity
             if not purity.ip:
-                message = "未能获取测试出口 IP，请在 Clash 的 Guard-Probe 组选用可用节点"
+                message = "未能获取当前出口 IP，请检查代理节点连通性"
                 self._append_log("warn", message)
                 return self._build_payload(ok=False, message=message)
             score_txt = f"{purity.fraud_score}/100" if purity.fraud_score is not None else "未知"

@@ -9,13 +9,11 @@ import http.client
 import json
 import os
 import re
-import ssl
 import subprocess
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 from urllib.parse import urljoin, urlsplit
@@ -23,6 +21,7 @@ from urllib.parse import urljoin, urlsplit
 from . import __version__
 from .clash_config import PROBE_PORT, read_config
 from .config import CLASH_VERGE_RUNTIME_YAML
+from .net import build_ssl_context
 from .sysutil import CREATE_NO_WINDOW, ps_quote
 
 GITHUB_REPO = "Octy-10/ClaudeGuard"
@@ -122,19 +121,7 @@ def detect_local_proxy_port() -> Optional[int]:
     return None
 
 
-@lru_cache(maxsize=1)
-def _build_ssl_context() -> ssl.SSLContext:
-    """构建合并系统证书与 certifi 根证书的 TLS 上下文，解决部分 Windows 未缓存新根证书导致的校验失败。"""
-    ctx = ssl.create_default_context()
-    try:
-        import certifi  # type: ignore[import-not-found]
-
-        cafile = certifi.where()
-        if cafile:
-            ctx.load_verify_locations(cafile=cafile)
-    except (ImportError, OSError, ssl.SSLError):
-        pass
-    return ctx
+_build_ssl_context = build_ssl_context
 
 
 def _open_https(

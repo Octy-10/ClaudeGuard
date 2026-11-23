@@ -1,10 +1,12 @@
-"""HTTPS probes through the configured local Clash mixed port."""
+"""HTTPS probes through an optional local proxy or the active TUN route."""
 
 from __future__ import annotations
 
 import http.client
 import json
+import ssl
 import time
+from functools import lru_cache
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
@@ -18,6 +20,21 @@ IP_INFO_URLS = (
     "https://api.ip.sb/geoip",
 )
 _RATE_LIMITED_UNTIL: dict[str, float] = {}
+
+
+@lru_cache(maxsize=1)
+def build_ssl_context() -> ssl.SSLContext:
+    """构建合并系统证书与 certifi 根证书的 TLS 上下文，解决部分 Windows 缺少新根证书的问题。"""
+    ctx = ssl.create_default_context()
+    try:
+        import certifi  # type: ignore[import-not-found]
+
+        cafile = certifi.where()
+        if cafile:
+            ctx.load_verify_locations(cafile=cafile)
+    except (ImportError, OSError, ssl.SSLError):
+        pass
+    return ctx
 
 
 def verify_proxy_listener(port: int) -> bool:
@@ -48,15 +65,20 @@ def canonical_ip(value: object, version: int | None = None) -> str:
     return str(address) if version is None or address.version == version else ""
 
 
-def fetch_text(url: str, *, proxy_port: int, timeout: float = 6.0) -> tuple[str | None, str]:
+def fetch_text(url: str, *, proxy_port: int | None = None, timeout: float = 6.0) -> tuple[str | None, str]:
     endpoint = urlsplit(url)
     if endpoint.scheme != "https" or not endpoint.hostname:
         return None, "探测需要 HTTPS 地址"
-    if type(proxy_port) is not int or not 1 <= proxy_port <= 65535:
-        return None, "Clash mixed-port 无效"
-    conn = http.client.HTTPSConnection("127.0.0.1", proxy_port, timeout=timeout)
-    try:
+    if proxy_port is not None:
+        if type(proxy_port) is not int or not 1 <= proxy_port <= 65535:
+            return None, "代理探测端口无效"
+        conn = http.client.HTTPSConnection("127.0.0.1", proxy_port, timeout=timeout, context=build_ssl_context())
         conn.set_tunnel(endpoint.hostname, endpoint.port or 443)
+    else:
+        conn = http.client.HTTPSConnection(
+            endpoint.hostname, endpoint.port or 443, timeout=timeout, context=build_ssl_context()
+        )
+    try:
         resource = endpoint.path or "/"
         if endpoint.query:
             resource += "?" + endpoint.query
@@ -74,7 +96,7 @@ def fetch_text(url: str, *, proxy_port: int, timeout: float = 6.0) -> tuple[str 
         conn.close()
 
 
-def fetch_json(url: str, *, proxy_port: int, timeout: float = 6.0) -> tuple[dict | None, str]:
+def fetch_json(url: str, *, proxy_port: int | None = None, timeout: float = 6.0) -> tuple[dict | None, str]:
     raw, error = fetch_text(url, proxy_port=proxy_port, timeout=timeout)
     if raw is None:
         return None, error
@@ -119,7 +141,7 @@ def _normalize_ip_info(data: dict) -> dict | None:
     }
 
 
-def fetch_ip_info(mixed_port: int) -> tuple[dict | None, str]:
+def fetch_ip_info(mixed_port: int | None = None) -> tuple[dict | None, str]:
     now = time.monotonic()
     ordered = [u for u in IP_INFO_URLS if _RATE_LIMITED_UNTIL.get(u, 0.0) <= now]
     ordered.extend(u for u in IP_INFO_URLS if u not in ordered)

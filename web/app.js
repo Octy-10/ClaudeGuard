@@ -31,6 +31,7 @@
   const statusTitles = { green: "防护正常", yellow: "有待处理的警告", red: "检测到防护异常" };
   const CHECK_LEVELS = { FAIL: "异常", WARN: "警告", UNKNOWN: "未知", PASS: "通过" };
   const PROBE_PATH = "clash-probe-listener";
+  const TUN_PATH = "system-tun";
   const protectionSwitches = ["swKillswitch", "swDns", "swWebrtc", "swIpv6"];
   const apiControls = {
     run_doctor: ["btnDoctor"],
@@ -358,7 +359,21 @@
       exitFlag.title = [ex.country_code, ex.country].filter(Boolean).join(" ");
     }
     $("exitIp").textContent = ex.ip || "未验证";
-    $("exitPath").textContent = ex.path === PROBE_PATH ? "Clash 回环体检 · Guard-Probe" : "未验证";
+    $("exitPath").textContent = ex.path === PROBE_PATH
+      ? "Clash 回环体检 · Guard-Probe"
+      : ex.path === TUN_PATH
+        ? "通用 TUN 通道"
+        : "未验证";
+    const exitNote = $("exitNote");
+    if (exitNote) {
+      exitNote.textContent = ex.path === PROBE_PATH
+        ? "通过 Clash Guard-Probe 回环通道核验"
+        : "通过当前活跃 TUN 通道实时核验";
+    }
+    const cfgProbeBtn = $("btnConfigureProbe");
+    if (cfgProbeBtn) {
+      cfgProbeBtn.hidden = !(payload.clash_dir_exists && !ex.ip && !report?.tun_up);
+    }
     const networkKind = ex.is_proxy === true ? "代理库" : ex.is_hosting === true ? "机房段" :
       ex.is_hosting === false ? "非机房" : "";
     const networkProperty = ex.ip ? [ex.asn, networkKind].filter(Boolean).join(" · ") : "";
@@ -371,7 +386,7 @@
     $("exitTz").textContent = ex.timezone || "—";
     const tunCheck = report?.items?.find(item => item.id === "tun");
     const tunKnown = Boolean(tunCheck && tunCheck.level !== "UNKNOWN");
-    const tunOnline = Boolean(report?.tun_up && report.mihomo_running);
+    const tunOnline = Boolean(report?.tun_up);
     $("tunState").dataset.level = !tunKnown ? "unknown" : tunOnline ? "online" : "offline";
     $("tunState").textContent = !tunKnown ? "TUN 待确认" : tunOnline ? "TUN 在线" : "TUN 未就绪";
 
@@ -530,11 +545,12 @@
         ? { cls: "pass", val: "未命中代理库", sub: "数据源无代理标记" }
         : { cls: "", val: "未知", sub: "当前数据源无该属性" });
 
+    const exitChannel = state.data?.report?.exit_info?.path === PROBE_PATH ? "Guard-Probe" : "通用 TUN";
     const cards = [
       { k: "网络类型", ...resCard },
       { k: "IP 归属属性", ...nativeCard },
       { k: "匿名 / 代理库", ...proxyCard },
-      { k: "Claude 实际出口", cls: "", val: "未核实", sub: "本次仅体检测试节点" },
+      { k: "探测通道", cls: "pass", val: exitChannel, sub: "已同步当前节点出口结果" },
     ];
     $("purityAttrGrid").innerHTML = cards
       .map(
