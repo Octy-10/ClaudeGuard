@@ -1,48 +1,109 @@
-# Claude Guard — 现代透明的 Claude 防封环境一键配置与守护工具
+<p align="center">
+  <img src="docs/images/claude-guard-banner.jpg" alt="Claude Guard 吉祥物横幅：Windows 网络自检、断网锁与出口监控" width="1200">
+</p>
 
-专为复用 **本机 Clash Verge (`verge-mihomo`)** 打造：不替换你的 VPN，仅专注**一键配置与实时监控 Claude 防封环境**。采用 **WebView2 原生暗夜桌面控制台 (`pywebview`) + 并发 Python 后端 + Win32 原生系统托盘**，无开放本地端口、无闭源常驻 `SYSTEM` 服务、无硬件指纹上报。
+# Claude Guard
 
----
+**为 Windows 上的 Claude 使用场景提供网络自检、断网锁和出口漂移提醒。** 搭配本机的 **Clash Verge Rev（Mihomo）** 使用。首次配置后，可以在同一个窗口查看 TUN 状态、测试节点出口和 Windows 防护项，需要时从托盘继续监控。
 
-## 核心能力（与 Clash Verge 完美互补）
+[下载 Windows 版](https://github.com/Octy-10/ClaudeGuard/releases/latest) · [首次配置](#首次配置) · [常见问题](#常见问题) · [紧急恢复](#紧急恢复)
 
-| 模块 | 实现原理 | 可逆还原 |
-|---|---|---|
-| **断网锁 Kill Switch** | Windows Defender 防火墙按**物理网卡**阻断 Anthropic IPv4/IPv6 段与本地 Claude 客户端直连；TUN 正常时无感通行，TUN 崩溃时秒断防裸连 | 一键关闭 / Rescue |
-| **物理网卡锁 DNS** | `Set-DnsClientServerAddress` 将物理网卡锁定为 `1.1.1.1 / 8.8.8.8`，防多宿解析回落本地运营商 DNS（自动备份原 DHCP / 静态 DNS） | 一键精确还原 |
-| **禁用物理网卡 IPv6** | `Disable-NetAdapterBinding -ComponentID ms_tcpip6` 防止双栈直连暴露 | 自动备份并还原 |
-| **防 WebRTC 泄漏** | 写入 Chrome / Edge / Firefox 组策略限制 WebRTC，并记录修改前的值 | 按备份还原策略 |
-| **系统时区同步** | `tzutil /s` 一键对齐出口 IP 所在时区，自动备份原时区 | 一键恢复原时区 |
-| **安全关闭 Claude 桌面端** | 按 `Anthropic, PBC` 数字签名精确匹配并结束 Claude 进程，切环境无残留连接 | 按需手动触发 |
-| **Clash Verge 覆写脚本** | 内置 [clash-verge-override.js](clash-verge-override.js) 添加仅限回环的测试入口。Claude 和其他应用按订阅规则分流 | 可移除全局扩展脚本 |
-| **9 项自检与托盘哨兵** | 核对有效的防火墙规则和 Mihomo 回环体检入口，通过该入口做 HTTPS 探测。可监控测试出口 IP 漂移 | 最小化到托盘常驻 |
+## 界面预览
 
----
+![Claude Guard 总览，显示巡检结果、防护开关和测试出口监控](docs/images/overview.png)
 
-## 快速开始
+<sub>界面取自项目代码，巡检状态与 IP 均为演示数据。</sub>
 
-### 1. 依赖（首次运行）
-安装桌面窗口和 Clash 配置审计所需依赖。
+| 入口 | 可以做什么 |
+| --- | --- |
+| **总览** | 立即自检、一键配置防护、调整单项开关和启动出口漂移监控。 |
+| **诊断** | 展开九项检查详情，查看异常原因与检查范围。 |
+| **IP 体检** | 查看测试节点的出口属性、代理记录与数据源结果。 |
+| **日志** | 查看当前会话中的系统变更、巡检和告警记录。 |
+
+## 下载与运行
+
+准备好 **Windows、Microsoft Edge WebView2 Runtime** 和已能正常联网的 **Clash Verge Rev**。调整防火墙、网卡或浏览器策略时需要 Windows 管理员权限。
+
+1. 打开 [最新发布页](https://github.com/Octy-10/ClaudeGuard/releases/latest)，在 **Assets** 中下载 `ClaudeGuard.exe`。
+2. 双击运行。要应用系统防护时，在窗口中选择 **以管理员重启** 并确认 Windows 的 UAC 提示。
+3. 如需核验下载文件，可用下方命令计算 SHA-256，并与同一发布页的 `SHA256SUMS.txt` 比对。
+
 ```powershell
+Get-FileHash .\ClaudeGuard.exe -Algorithm SHA256
+```
+
+## 首次配置
+
+1. **应用扩展脚本。** 在 Guard 的 **总览 → 配置出口检测** 点击 **复制脚本**。先备份已有全局扩展脚本，再到 **Clash Verge → 订阅 → 全局扩展脚本** 粘贴完整脚本，保存并重新应用当前订阅。
+2. **选择测试节点。** 将 Clash 切到 **规则模式（Rule）**。脚本会配置 TUN、自动路由、严格路由和 DNS，并关闭 Clash 顶层及 DNS 的 IPv6。打开 Clash 的 **Guard-Probe** 策略组，手动选择一个可用节点。
+3. **确认诊断范围。** 回到 Guard 点击 **立即自检**，看到 **测试出口 IP** 后，可展开诊断详情，或到 **IP 体检 → 开始体检** 查看更多信息。要核对 Claude 的实际连接，请打开 Clash 的 **连接** 页，查看对应连接所用的规则与代理链。
+4. **按需开启防护和监控。** 点击 **一键配置** 会应用断网锁、物理网卡 DNS、物理网卡 IPv6 和浏览器 WebRTC 四项设置。点击 **开始监控** 会记录当前测试出口 IP，后续检测到变化时提醒你。窗口右上角的 `×` 会将 Guard 收到系统托盘。
+
+### 测试出口怎么来的
+
+```mermaid
+flowchart TD
+    A["Guard 自检或 IP 体检"] --> B["Mihomo 本机入口（127.0.0.1:17897）"]
+    B --> C["Guard-Probe 所选节点"]
+    C --> D["IP 查询服务 → 测试出口"]
+    E["Claude 的连接"] --> F["Clash 订阅规则"]
+    F --> G["规则命中的代理链或直连"]
+```
+
+Guard 的体检结果与漂移提醒对应 **Guard-Probe 所选节点**。Claude 的连接依照 Clash 当前规则和策略组分流，两条路径可能使用不同出口。
+
+## 防护能力
+
+| 功能 | 作用 |
+| --- | --- |
+| **断网锁（Kill Switch）** | 在 Windows Defender 防火墙中添加针对物理网卡的规则，拦截已知 Anthropic 地址段，以及识别到的 Claude 桌面程序直连。适用范围可在诊断中核对。 |
+| **物理网卡 DNS** | 保存原有 DNS 设置，将物理网卡 DNS 设为 `1.1.1.1` 和 `8.8.8.8`。 |
+| **物理网卡 IPv6** | 保存绑定状态并关闭物理网卡的 IPv6 绑定。Clash 内的 IPv6 设置由扩展脚本处理。 |
+| **浏览器 WebRTC** | 为 Chrome、Edge 和 Firefox 应用 WebRTC 策略，并备份相关原值。 |
+| **巡检与告警** | 检查 TUN、测试出口、断网锁、物理 DNS、IPv6、WebRTC、时区、Clash 配置和冲突项。可选开启提示音或高危联动关闭 Claude 桌面端。 |
+| **系统时区与桌面端操作** | 可手动按测试出口对齐 Windows 时区，也可按需关闭识别到的 Claude 桌面进程。 |
+
+## 常见问题
+
+| 遇到的问题 | 可以先查这里 |
+| --- | --- |
+| Clash 里找不到 **Guard-Probe** | 确认脚本已保存，重新应用了当前订阅，并检查 Clash 是否报告脚本错误。 |
+| 有 **Guard-Probe**，但拿不到测试 IP | 首次加载或找不到候选节点时，该组默认使用 `REJECT`。请手动选择一个可用节点，再回到 Guard 自检。脚本从订阅 YAML 的 `proxies` 中读取候选节点，只有 `proxy-providers` 的订阅可能没有候选。 |
+| 看到测试 IP，怎样确认 Claude 的连接？ | 在 Clash 的 **连接** 页查看 Claude 对应连接的规则与代理链。`127.0.0.1:17897` 是 Guard 测试专用的本机入口。 |
+| 虚拟机能否继续使用原代理端口？ | `17897` 仅绑定本机回环地址。虚拟机继续使用原本配置的局域网 `mixed-port`。 |
+| 切换测试节点后出现漂移提示 | 核实新节点后，点击 **停止监控 → 开始监控**，用当前测试出口重新建立监控基准。 |
+| 防护开关应用失败 | 确认 Guard 以管理员权限运行，再查看 **诊断** 或 **日志** 中的失败项目。 |
+| 如何更新？ | 在标题栏 **··· → 检查更新** 查看新版本。EXE 版可下载并校验 SHA-256 后重启更新，源码版可从 [GitHub Releases](https://github.com/Octy-10/ClaudeGuard/releases) 手动获取新版本。 |
+
+## 紧急恢复
+
+在标题栏 **··· → 紧急恢复** 中确认恢复。Guard 会移除自己添加的断网锁规则，并按备份恢复 DNS、IPv6、WebRTC 和时区。源码用户也可以双击 [`rescue.bat`](rescue.bat)，或在管理员终端运行 `python app.py --rescue`。
+
+如果还有失败项，请保留 `%USERPROFILE%\.claude-guard\backup.json` 并查看恢复结果。旧版 WebRTC 备份可能缺少策略原值，遇到此提示时请手动核对浏览器组策略。若要撤回 Clash 侧的改动，请恢复之前保存的全局扩展脚本，再重新应用订阅。
+
+## 从源码运行
+
+安装 **Python 3.10 或更高版本**，在 Windows PowerShell 执行以下命令。
+
+```powershell
+git clone https://github.com/Octy-10/ClaudeGuard.git
+Set-Location ClaudeGuard
 python -m pip install -r requirements.txt
+python app.py
 ```
 
-### 2. 验证运行环境与并发自检
-在 `E:\Code\Claude防护` 运行：
-```powershell
-python verify.py
-```
+也可以双击 [`start_guard.bat`](start_guard.bat) 以管理员权限启动。运行 `python app.py --doctor` 可在终端执行一次自检，运行 `python verify.py` 可查看命令行环境检查，运行 `python -m unittest discover -s tests -v` 可执行 Python 单元测试。
 
-### 3. 启动现代化可视化控制台
-双击 [start_guard.bat](start_guard.bat)（弹出标准 UAC 提权确认，打开桌面控制台）：
-1. 点击总览的 **「配置出口检测」**，复制完整脚本，替换 **Clash Verge → 订阅 → 全局扩展脚本** 的旧内容，再应用订阅。
-2. 在 Clash 使用规则模式，开启 TUN、自动路由、严格路由和 DNS，关闭 Clash 顶层和 DNS 的 IPv6。在 **Guard-Probe** 组选择一个内联代理节点。首次加载和无可用节点时使用 `REJECT`。
-3. 返回 Guard 自检或运行 IP 体检。探测通过 Mihomo 的 `127.0.0.1:17897`，VM 继续使用原来的局域网 mixed-port。测试结果覆盖 Guard-Probe 所选节点。
-4. 在总览点击 **「一键配置」** 应用防护。如需监控测试节点的出口变化，点击 **「开始监控」**。点击窗口关闭按钮 `×` 可最小化到托盘。
+| 路径 | 内容 |
+| --- | --- |
+| [`app.py`](app.py) / [`guard/`](guard/) | 桌面入口、自检、系统防护、配置备份和更新逻辑。 |
+| [`web/`](web/) | pywebview 加载的本地界面。 |
+| [`clash-verge-override.js`](clash-verge-override.js) | Clash Verge 全局扩展脚本与 Guard-Probe 配置。 |
+| [`tests/`](tests/) | 防护、恢复、更新及脚本的回归测试。 |
 
----
+## 数据与使用范围
 
-## 紧急恢复与彻底卸载
+系统设置与备份保存在本机。Guard 的桌面界面通过进程内桥接调用后端。出口与 IP 体检会访问第三方 IP 查询服务，版本检查与下载会访问 GitHub Releases。防护结果用于诊断本机网络条件，Claude 账号状态与服务可用性由 Anthropic 决定。
 
-- 在标题栏 **「···」** 菜单选择 **「紧急恢复」**，或双击 [rescue.bat](rescue.bat)。程序按备份恢复已记录的系统改动，失败的项保留备份并写入日志。
-- 旧版 WebRTC 备份只记录是否修改过。遇到该提示时，请手动核对原组策略。完成恢复后再卸载，并保留尚未恢复项目的备份。
+发现问题时，可在 [GitHub Issues](https://github.com/Octy-10/ClaudeGuard/issues) 附上 Guard 版本、Windows 版本、Clash Verge Rev 版本和相关诊断项。公开提交前，请遮挡实际 IP、订阅地址和账号信息。
