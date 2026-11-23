@@ -1,4 +1,4 @@
-"""WebView2 前后端通信桥接层（GuardBridge）。
+"""WebView 前后端通信桥接层（GuardBridge）。
 
 设计原则：
 - 仅暴露以 JSON 可序列化字典为返回值的公开方法给 `window.pywebview.api`；
@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, Optional
 
 from . import __version__
+from . import macos_protection as mac_protection
 from .clash_config import PROBE_PORT
 from .config import (
     APP_NAME,
@@ -31,38 +32,34 @@ from .config import (
     save_config,
 )
 from .doctor import PROBE_PATH, TUN_PATH, DoctorReport, check_probe_route, run_doctor
-from .firewall import disable_killswitch, enable_killswitch
-from .hardening import (
-    align_timezone_to_iana,
-    clear_webrtc_policies,
-    disable_physical_ipv6,
-    enable_webrtc_policies,
-    get_autostart_enabled,
-    kill_claude_desktop,
-    lock_physical_dns,
-    play_alert_beep,
-    restore_physical_dns,
-    restore_physical_ipv6,
-    restore_timezone,
-    run_rescue,
-    run_steps,
-    set_autostart_enabled,
-    StepResult,
-)
-from .probe import _fast_check_tun_up, probe_fast_local_health
 from .purity import PurityReport, run_purity_check
-from .sysutil import get_bundle_root, is_admin, relaunch_as_admin, system_change_lock
+from .sysutil import get_bundle_root, is_admin
 from .updater import (
     RELEASES_LATEST_URL,
     UpdateInfo,
     apply_update_and_restart,
     check_for_update,
+    check_for_macos_update,
     download_update,
     is_allowed_update_url,
 )
 
+if sys.platform == "win32":
+    from .firewall import disable_killswitch, enable_killswitch
+    from .hardening import (
+        StepResult, align_timezone_to_iana, clear_webrtc_policies, disable_physical_ipv6,
+        enable_webrtc_policies, get_autostart_enabled, kill_claude_desktop, lock_physical_dns,
+        play_alert_beep, restore_physical_dns, restore_physical_ipv6, restore_timezone,
+        run_rescue, run_steps, set_autostart_enabled,
+    )
+    from .probe import _fast_check_tun_up, probe_fast_local_health
+    from .sysutil import relaunch_as_admin, system_change_lock
+else:
+    from .macos import default_route_interface, is_tunnel_interface, play_alert_beep, settings_lock as system_change_lock
+
 PROJECT_ROOT = get_bundle_root()
 OVERRIDE_SCRIPT_PATH = PROJECT_ROOT / "clash-verge-override.js"
+MAC_OVERRIDE_SCRIPT_PATH = PROJECT_ROOT / "clash-macos-probe.js"
 AUTHOR_DOUYIN_URL = (
     "https://www.douyin.com/user/"
     "MS4wLjABAAAA1Rwt_jH2HH7M3Ra_FcozWkNv5UYuZQtTjJuzCGvIlJQ?from_tab_name=main"
@@ -81,7 +78,8 @@ class GuardBridge:
         on_update_badge: Optional[Callable[[bool, str], None]] = None,
     ) -> None:
         self._cfg: GuardConfig = load_config()
-        self._admin: bool = is_admin()
+        self._macos = sys.platform == "darwin"
+        self._admin: bool = not self._macos and is_admin()
         self._last_report: Optional[DoctorReport] = None
         self._last_purity: Optional[PurityReport] = None
         self._last_alert_sig: str = ""
@@ -102,7 +100,8 @@ class GuardBridge:
         self._update_progress: Optional[Dict[str, Any]] = None
         self._update_notified_version: str = ""
 
-        self._append_log("info", f"{APP_NAME} v{__version__} 启动完成（{'管理员模式' if self._admin else '只读普通权限'}）")
+        mode = "macOS" if self._macos else ("管理员模式" if self._admin else "只读普通权限")
+        self._append_log("info", f"{APP_NAME} v{__version__} 启动完成（{mode}）")
 
     # ------------------------------------------------------------------
     # 内部生命周期与状态构建
@@ -123,12 +122,16 @@ class GuardBridge:
             "app_name": APP_NAME,
             "version": __version__,
             "is_admin": self._admin,
+            "platform": "macos" if self._macos else "windows",
+            "mac_installed": self._macos and mac_protection.installed(),
             "config": asdict(self._cfg),
             "report": self._last_report.to_dict() if self._last_report else None,
             "purity": self._last_purity.to_dict() if self._last_purity else None,
             "logs": list(self._logs),
             "clash_dir_exists": CLASH_VERGE_DIR.exists(),
-            "autostart_enabled": get_autostart_enabled(),
+            "autostart_enabled": (
+                bool(mac_protection.host_command("login-status").get("enabled")) if self._macos else get_autostart_enabled()
+            ),
             "update": self._update_info.to_dict() if self._update_info else None,
             "update_progress": dict(self._update_progress) if self._update_progress else None,
         }
@@ -142,7 +145,13 @@ class GuardBridge:
             self._on_tray_notify(title, summary, "error")
         if self._cfg.alert_sound:
             play_alert_beep()
-        if self._cfg.auto_kill_claude_on_critical:
+        if self._macos and self._cfg.auto_kill_claude_on_critical:
+            result = mac_protection.host_command("claude-quit")
+            if result.get("count"):
+                self._append_log("warn", "高危联动已请求退出 Claude Desktop。")
+            elif not result["ok"]:
+                self._append_log("error", result.get("message", "无法退出 Claude Desktop。"))
+        elif self._cfg.auto_kill_claude_on_critical:
             ok, msg = kill_claude_desktop()
             if ok and "安全结束" in msg:
                 self._append_log("warn", f"高危联动已触发：{msg}")
@@ -187,17 +196,24 @@ class GuardBridge:
                 if self._stop_event.wait(timeout=fast_interval):
                     break
 
-                # 1. 每 3 秒执行一次纯 Win32 本地快检（~5ms，零 PowerShell，零外网）
                 urgent_reason = ""
                 fast_fault_detected = False
                 try:
-                    fast = probe_fast_local_health()
                     faults = []
-                    if not fast["tun_up"]:
-                        faults.append("TUN 虚拟网卡已断开")
-                    fast_fault_detected = bool(faults)
-                    if settings.protection_enabled and fast["fw_disabled_hint"]:
-                        faults.append("重新核对防火墙档位：" + "、".join(fast["fw_disabled_hint"]))
+                    if self._macos:
+                        interface = default_route_interface()
+                        if self._last_report and self._last_report.tun_up and interface and not is_tunnel_interface(interface):
+                            faults.append("IPv4 样本路由发生变更")
+                        if settings.protection_enabled and mac_protection.extension_active() is False:
+                            faults.append("Claude Desktop 网络扩展已停用")
+                            fast_fault_detected = True
+                    else:
+                        fast = probe_fast_local_health()
+                        if not fast["tun_up"]:
+                            faults.append("TUN 虚拟网卡已断开")
+                        fast_fault_detected = bool(faults)
+                        if settings.protection_enabled and fast["fw_disabled_hint"]:
+                            faults.append("重新核对防火墙档位：" + "、".join(fast["fw_disabled_hint"]))
                     fault_sig = "|".join(faults)
                     if fault_sig and fault_sig != self._last_fast_fault:
                         urgent_reason = "；".join(faults)
@@ -244,11 +260,40 @@ class GuardBridge:
             pass
 
     def _require_admin(self, action_name: str) -> Optional[Dict[str, Any]]:
+        if self._macos:
+            return self._macos_unavailable(action_name)
         if not self._admin:
             msg = f"{action_name}需要管理员权限，请点击窗口右下角「以管理员重启」"
             self._append_log("warn", msg)
             return self._build_payload(ok=False, message=msg)
         return None
+
+    def _macos_unavailable(self, action_name: str) -> Dict[str, Any]:
+        return self._build_payload(ok=False, message=f"请在 macOS 系统对话框批准「{action_name}」。")
+
+    def _apply_macos(self, action_name: str, action: Callable[[], dict], *, refresh: bool = True) -> Dict[str, Any]:
+        with self._op_lock, system_change_lock() as acquired:
+            if not acquired or self._stop_event.is_set():
+                return self._build_payload(ok=False, message="系统变更暂不可用，请稍后重试")
+            try:
+                result = action()
+                ok = result["ok"] is True
+                message = result.get("message") or (f"{action_name}完成" if ok else f"{action_name}失败")
+                if type(result.get("filter_enabled")) is bool:
+                    cfg = load_config()
+                    cfg.protection_enabled = result["filter_enabled"]
+                    save_config(cfg)
+                    self._cfg = cfg
+            except (OSError, RuntimeError, ValueError) as exc:
+                ok, message = False, f"{action_name}失败：{exc}"
+            self._append_log("ok" if ok else "warn", message)
+            if refresh:
+                try:
+                    self._run_doctor_unlocked()
+                except Exception as exc:
+                    self._last_report = None
+                    self._append_log("error", f"系统状态复查失败：{exc}")
+            return self._build_payload(ok=ok, message=message)
 
     # ------------------------------------------------------------------
     # 暴露给前端 JS（window.pywebview.api.*）的公开方法
@@ -314,6 +359,17 @@ class GuardBridge:
                                   protection_enabled=protection_enabled)
 
     def enable_all_protection(self) -> Dict[str, Any]:
+        if self._macos:
+            def enable():
+                result = mac_protection.set_filter(True)
+                if not result["ok"]:
+                    return result
+                system = mac_protection.settings_command("network-on")
+                if not system["ok"]:
+                    return {"ok": False, "filter_enabled": True, "message": f"断网锁已配置。系统网络设置需要处理：{system.get('message', '')}"}
+                return {"ok": True, "filter_enabled": True, "message": "断网锁、DNS 和 IPv6 设置已应用。WebRTC 描述文件可在单项开关中安装。"}
+
+            return self._apply_macos("一键配置防护", enable)
         return self._apply_system("一键配置防护", lambda: run_steps([
             ("Kill Switch", lambda: enable_killswitch(self._cfg.extra_claude_exes)),
             ("物理网卡 DNS", lock_physical_dns),
@@ -322,9 +378,13 @@ class GuardBridge:
         ]), protection_enabled=True)
 
     def toggle_dns_lock(self, enable: bool) -> Dict[str, Any]:
-        return self._apply_setting("调整物理网卡 DNS", lock_physical_dns if enable else restore_physical_dns)
+        if self._macos:
+            return self._apply_macos("调整 DNS", lambda: mac_protection.settings_command("dns-on" if enable else "dns-off"))
+        return self._apply_setting("调整物理网卡 DNS", lambda: (lock_physical_dns if enable else restore_physical_dns)())
 
     def kill_claude_app(self) -> Dict[str, Any]:
+        if self._macos:
+            return self._apply_macos("请求退出 Claude Desktop", lambda: mac_protection.host_command("claude-quit"))
         with self._op_lock:
             ok, msg = kill_claude_desktop()
             self._append_log("ok" if ok else "error", msg)
@@ -332,14 +392,27 @@ class GuardBridge:
             return self._build_payload(ok=ok, message=msg)
 
     def toggle_killswitch(self, enable: bool) -> Dict[str, Any]:
-        action = (lambda: enable_killswitch(self._cfg.extra_claude_exes)) if enable else disable_killswitch
+        if self._macos:
+            return self._apply_macos("调整 Claude Desktop 断网锁", lambda: mac_protection.set_filter(bool(enable)))
+        def action():
+            return enable_killswitch(self._cfg.extra_claude_exes) if enable else disable_killswitch()
+
         return self._apply_setting("调整 Kill Switch 防火墙", action, protection_enabled=enable)
 
     def toggle_webrtc(self, enable: bool) -> Dict[str, Any]:
-        return self._apply_setting("调整浏览器 WebRTC 策略", enable_webrtc_policies if enable else clear_webrtc_policies)
+        if self._macos:
+            return self._apply_macos("打开 WebRTC 配置", lambda: mac_protection.open_profile_settings(bool(enable)))
+        return self._apply_setting("调整浏览器 WebRTC 策略", lambda: (enable_webrtc_policies if enable else clear_webrtc_policies)())
 
     def toggle_ipv6(self, disable: bool) -> Dict[str, Any]:
-        return self._apply_setting("调整物理网卡 IPv6", disable_physical_ipv6 if disable else restore_physical_ipv6)
+        if self._macos:
+            return self._apply_macos("调整 IPv6", lambda: mac_protection.settings_command("ipv6-on" if disable else "ipv6-off"))
+        return self._apply_setting("调整物理网卡 IPv6", lambda: (disable_physical_ipv6 if disable else restore_physical_ipv6)())
+
+    def launch_claude_app(self) -> Dict[str, Any]:
+        if not self._macos:
+            return self._build_payload(ok=False, message="请通过 Windows 的 Claude 客户端入口启动。")
+        return self._apply_macos("通过断网锁启动 Claude", mac_protection.launch_claude)
 
     def toggle_ip_monitor(self, enable: bool | None = None) -> Dict[str, Any]:
         """设置 Guard-Probe 测试出口的漂移监控。"""
@@ -387,6 +460,14 @@ class GuardBridge:
             return self._build_payload(message=msg)
 
     def align_timezone(self) -> Dict[str, Any]:
+        if self._macos:
+            def align_mac():
+                info = self._last_report.exit_info if self._last_report else None
+                if not info or info.path != PROBE_PATH or not info.timezone:
+                    return {"ok": False, "message": "尚未获取已核实的测试出口时区，请先执行自检。"}
+                return mac_protection.settings_command("timezone-set", info.timezone)
+
+            return self._apply_macos("对齐系统时区", align_mac)
         def align():
             report = self._last_report
             if not report or report.exit_info.path not in (PROBE_PATH, TUN_PATH) or not report.exit_info.timezone:
@@ -396,10 +477,14 @@ class GuardBridge:
         return self._apply_setting("对齐系统时区", align)
 
     def restore_timezone(self) -> Dict[str, Any]:
-        return self._apply_setting("恢复原系统时区", restore_timezone)
+        if self._macos:
+            return self._apply_macos("恢复系统时区", lambda: mac_protection.settings_command("timezone-restore"))
+        return self._apply_setting("恢复原系统时区", lambda: restore_timezone())
 
     def run_rescue(self) -> Dict[str, Any]:
-        return self._apply_system("紧急恢复", run_rescue, protection_enabled=False)
+        if self._macos:
+            return self._apply_macos("紧急恢复", mac_protection.rescue)
+        return self._apply_system("紧急恢复", lambda: run_rescue(), protection_enabled=False)
 
     def toggle_alert_sound(self, enable: bool) -> Dict[str, Any]:
         """开关红灯突发告警时的 Windows 系统提示音。"""
@@ -431,6 +516,15 @@ class GuardBridge:
 
     def toggle_autostart(self, enable: bool) -> Dict[str, Any]:
         """开关当前用户开机静默最小化到托盘守护（仅写 HKCU\\Run，无系统服务）。"""
+        if self._macos:
+            def login():
+                result = mac_protection.host_command("login-enable" if enable else "login-disable")
+                if result.get("approval"):
+                    return {"ok": False, "message": "请在系统设置的「登录项与扩展」中批准 Claude Guard。"}
+                if result["ok"] and bool(result.get("enabled")) != bool(enable):
+                    return {"ok": False, "message": "尚未核实系统登录项设置。"}
+                return result
+            return self._apply_macos("调整登录自动启动", login, refresh=False)
         with self._op_lock, system_change_lock() as acquired:
             if not acquired or self._stop_event.is_set():
                 return self._build_payload(ok=False, message="系统变更暂不可用，请稍后重试")
@@ -444,6 +538,9 @@ class GuardBridge:
             error = check_probe_route()
             if not error:
                 purity = run_purity_check(PROBE_PORT)
+            elif self._macos:
+                self._last_purity = None
+                return self._build_payload(ok=False, message=error)
             else:
                 tun_up, _ = _fast_check_tun_up()
                 if not tun_up:
@@ -470,7 +567,7 @@ class GuardBridge:
 
     def get_override_script(self) -> Dict[str, Any]:
         """读取订阅分流体检脚本。"""
-        path = OVERRIDE_SCRIPT_PATH
+        path = MAC_OVERRIDE_SCRIPT_PATH if self._macos else OVERRIDE_SCRIPT_PATH
         try:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
@@ -484,6 +581,12 @@ class GuardBridge:
 
     def open_clash_dir(self) -> Dict[str, Any]:
         """在文件资源管理器中打开 Clash Verge 配置目录（或项目目录）。"""
+        if self._macos:
+            try:
+                subprocess.run(["/usr/bin/open", str(CLASH_VERGE_DIR)], check=True, capture_output=True, timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                return {"ok": False, "message": "无法打开 Clash 配置目录，请先安装并启动 Clash Verge Rev"}
+            return {"ok": True, "message": f"已打开目录：{CLASH_VERGE_DIR}"}
         target = CLASH_VERGE_DIR if CLASH_VERGE_DIR.exists() else PROJECT_ROOT
         try:
             os.startfile(str(target))  # type: ignore[attr-defined]
@@ -503,7 +606,7 @@ class GuardBridge:
 
     def _check_update_internal(self, *, silent: bool) -> UpdateInfo:
         with self._update_lock:
-            info = check_for_update(__version__)
+            info = (check_for_macos_update if self._macos else check_for_update)(__version__)
             self._update_info = info
             if info.available:
                 if self._on_update_badge:
@@ -514,7 +617,7 @@ class GuardBridge:
                     if self._on_tray_notify:
                         self._on_tray_notify(
                             f"{APP_NAME} 发现新版本 v{info.latest_version}",
-                            "点击主界面右上角红点或托盘菜单可一键自动更新。",
+                            "在主界面下载系统安装包。" if self._macos else "点击主界面右上角红点或托盘菜单可一键自动更新。",
                             "info",
                         )
             else:
@@ -542,6 +645,17 @@ class GuardBridge:
 
     def install_update(self) -> Dict[str, Any]:
         """流式下载新版本、校验 SHA-256 并触发覆盖重启。"""
+        if self._macos:
+            with self._update_lock:
+                info = self._update_info
+                if not info or not info.available or not is_allowed_update_url(info.download_url):
+                    return self._build_payload(ok=False, message="请先检查 macOS 更新。")
+                try:
+                    if webbrowser.open(info.download_url, new=2):
+                        return self._build_payload(message="已打开安装包下载。下载完成后请退出 Guard，再打开安装包更新。")
+                except (OSError, webbrowser.Error):
+                    pass
+                return self._build_payload(ok=False, message="无法打开 macOS 安装包下载地址。")
         if not self._update_lock.acquire(blocking=False):
             return self._build_payload(ok=False, message="更新任务正在进行中，请稍候")
         try:
@@ -614,6 +728,8 @@ class GuardBridge:
         url = candidate if is_allowed_update_url(candidate) else RELEASES_LATEST_URL
         try:
             if not webbrowser.open(url, new=2):
+                if self._macos:
+                    return {"ok": False, "message": "无法打开 GitHub Release 页面"}
                 os.startfile(url)  # type: ignore[attr-defined]
             return {"ok": True, "message": "已在浏览器中打开 GitHub Release 页面"}
         except Exception as exc:
@@ -621,6 +737,8 @@ class GuardBridge:
 
     def elevate(self) -> Dict[str, Any]:
         """触发 UAC 以管理员身份重启当前应用（带 --handoff 参数平滑交接单实例锁）。"""
+        if self._macos:
+            return self._macos_unavailable("管理员模式")
         if relaunch_as_admin(str(PROJECT_ROOT / "app.py"), extra_args=["--handoff"]):
             if self._on_request_quit:
                 threading.Timer(0.15, self._on_request_quit).start()

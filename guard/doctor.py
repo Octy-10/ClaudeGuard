@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -25,18 +26,15 @@ from .config import (
     PROXY_CORE_EXECUTABLES,
     GuardConfig,
 )
-from .firewall import KillSwitchStatus, get_status as get_firewall_status
-from .hardening import (
-    WebRtcPolicyState,
-    get_current_windows_timezone,
-    get_webrtc_policy_state,
-)
 from .net import canonical_ip, fetch_ip_info, fetch_json, verify_proxy_listener
-from .probe import check_old_hklm_run, normalize_list, probe_system_snapshot
 
-# 保留内部别名以便单测直接 mock
-_probe_system_snapshot = probe_system_snapshot
-_check_old_hklm_run = check_old_hklm_run
+if sys.platform == "win32":
+    from .firewall import KillSwitchStatus, get_status as get_firewall_status
+    from .hardening import WebRtcPolicyState, get_current_windows_timezone, get_webrtc_policy_state
+    from .probe import check_old_hklm_run, normalize_list, probe_system_snapshot
+
+    _probe_system_snapshot = probe_system_snapshot
+    _check_old_hklm_run = check_old_hklm_run
 
 
 @dataclass
@@ -333,14 +331,16 @@ def _check_timezone(cur_tz: str, exit_tz: str) -> Tuple[CheckItem, str, bool]:
     )
 
 
-def _audit_clash_verge_config() -> CheckItem:
+def _audit_clash_verge_config(*, require_tun_dns: bool = True) -> CheckItem:
     name = "Clash Verge 配置审计"
     try:
         config = read_config(CLASH_VERGE_RUNTIME_YAML)
     except (OSError, ValueError) as exc:
         return CheckItem("clash_config", name, "UNKNOWN", "无法读取 Clash 运行配置", str(exc))
 
-    issues = [*subscription_probe_issues(config), *tun_dns_issues(config)]
+    issues = subscription_probe_issues(config)
+    if require_tun_dns:
+        issues.extend(tun_dns_issues(config))
     if issues:
         return CheckItem("clash_config", name, "WARN", issues[0], "\n".join(issues))
     if not verify_proxy_listener(PROBE_PORT):
@@ -352,7 +352,7 @@ def _audit_clash_verge_config() -> CheckItem:
 
 
 def check_probe_route() -> str:
-    item = _audit_clash_verge_config()
+    item = _audit_clash_verge_config(require_tun_dns=sys.platform != "darwin")
     return "" if item.level == "PASS" else item.summary
 
 
@@ -378,6 +378,10 @@ def _check_conflicts(procs_lower: set[str], old_svc: str, old_run: bool) -> Chec
 # ----------------------------------------------------------------------
 def run_doctor(cfg: GuardConfig) -> DoctorReport:
     """并发执行通用 TUN 防泄漏自检并返回结构化报告（已配置 Guard-Probe 时优先复用）。"""
+    if sys.platform == "darwin":
+        from .macos_doctor import run_macos_doctor
+
+        return run_macos_doctor(cfg)
     t0 = time.perf_counter()
 
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="DoctorProbe") as pool:

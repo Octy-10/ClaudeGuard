@@ -23,11 +23,12 @@ PHYSICAL_ADAPTER_FILTER = (
     "$_.InterfaceDescription -notmatch 'Mihomo|Wintun|Meta Tunnel|sing-tun|WireGuard|TAP-Windows|Loopback'"
 )
 
-_kernel32_err = ctypes.WinDLL("kernel32", use_last_error=True)
-_kernel32_err.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
-_kernel32_err.CreateMutexW.restype = wintypes.HANDLE
-_kernel32_err.CloseHandle.argtypes = [wintypes.HANDLE]
-_kernel32_err.CloseHandle.restype = wintypes.BOOL
+if sys.platform == "win32":
+    _kernel32_err = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32_err.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    _kernel32_err.CreateMutexW.restype = wintypes.HANDLE
+    _kernel32_err.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32_err.CloseHandle.restype = wintypes.BOOL
 
 
 class SingleInstanceLock:
