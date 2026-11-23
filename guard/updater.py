@@ -31,7 +31,6 @@ MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ASSET_BYTES = 128 * 1024 * 1024
 UPDATE_USER_AGENT = "ClaudeGuard-Updater/1.0"
 STAGED_FILENAME = "ClaudeGuard.update.tmp"
-DETACHED_PROCESS = 0x00000008
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
@@ -350,19 +349,20 @@ def build_replace_ps_script(staged_exe: Path, target_exe: Path, pid: int) -> str
     staged_q = ps_quote(str(staged_exe))
     target_q = ps_quote(str(target_exe))
     backup_q = ps_quote(f"{target_exe}.old")
+    work_dir_q = ps_quote(str(target_exe.parent))
     return (
         "$ErrorActionPreference = 'Stop'\n"
         f"$targetPid = {int(pid)}\n"
         f"$staged = {staged_q}\n"
         f"$target = {target_q}\n"
         f"$backup = {backup_q}\n"
-        "$workDir = Split-Path -LiteralPath $target -Parent\n"
+        f"$workDir = {work_dir_q}\n"
         "for ($i = 0; $i -lt 60; $i++) {\n"
         "    if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) { break }\n"
         "    Start-Sleep -Milliseconds 500\n"
         "}\n"
         "$replaced = $false\n"
-        "for ($j = 0; $j -lt 20; $j++) {\n"
+        "for ($j = 0; $j -lt 30; $j++) {\n"
         "    try {\n"
         "        if (Test-Path -LiteralPath $backup) {\n"
         "            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue\n"
@@ -415,10 +415,15 @@ def apply_update_and_restart(
         os.environ.get("SystemRoot", r"C:\Windows"),
         r"System32\WindowsPowerShell\v1.0\powershell.exe",
     )
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("_MEI", "_PYI_"))}
     try:
         subprocess.Popen(
             [ps_exe, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
-            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=clean_env,
+            creationflags=CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
             close_fds=True,
         )
     except OSError as exc:

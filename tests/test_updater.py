@@ -1,7 +1,10 @@
+import base64
 import hashlib
 import io
 import json
+import os
 import ssl
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -165,7 +168,34 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("ClaudeGuard-一键配置环境.exe", script)
         self.assertIn("--handoff", script)
         self.assertIn(".old", script)
+        self.assertNotIn("Split-Path", script)
         self.assertIn("-LiteralPath $backup", script)
+
+    def test_replace_ps_script_executes_cleanly_in_windows_powershell(self):
+        ps_exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / r"System32\WindowsPowerShell\v1.0\powershell.exe"
+        if not ps_exe.is_file():
+            self.skipTest("Windows PowerShell 5.1 not available")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "ClaudeGuard (1)-一键.exe"
+            staged = root / updater.STAGED_FILENAME
+            backup = Path(f"{target}.old")
+            target.write_bytes(b"OLD")
+            staged.write_bytes(b"NEW")
+
+            script = updater.build_replace_ps_script(staged, target, 999999)
+            script = script.replace("Start-Process -FilePath", "Write-Output")
+            encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+            proc = subprocess.run(
+                [str(ps_exe), "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            self.assertEqual(target.read_bytes(), b"NEW")
+            self.assertFalse(staged.exists())
+            self.assertFalse(backup.exists())
 
     def test_bridge_check_update_notifies_badge(self):
         badge_calls = []
