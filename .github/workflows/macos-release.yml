@@ -1,0 +1,146 @@
+name: macOS signed release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag, such as v1.3.0'
+        required: true
+        type: string
+      publish:
+        description: 'Upload signed installers to GitHub Releases'
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  signed-installer:
+    environment: macos-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            python_arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+            python_arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the release source
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          commit="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          git checkout --detach "$commit"
+          test "$RELEASE_TAG" = "v$(python3 -c 'from guard import __version__; print(__version__)')"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.python_arch }}
+      - name: Test release source
+        run: |
+          python -m pip install -r requirements.txt pyinstaller pillow
+          python -m unittest discover -s tests -p 'test_macos*.py' -v
+          node --test tests/macos-probe.test.cjs
+      - name: Sign, notarize and verify installer
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
+          MACOS_APPLICATION_IDENTITY: ${{ vars.MACOS_APPLICATION_IDENTITY }}
+          MACOS_INSTALLER_IDENTITY: ${{ vars.MACOS_INSTALLER_IDENTITY }}
+          MACOS_APPLICATION_P12: ${{ secrets.MACOS_APPLICATION_P12 }}
+          MACOS_APPLICATION_P12_PASSWORD: ${{ secrets.MACOS_APPLICATION_P12_PASSWORD }}
+          MACOS_INSTALLER_P12: ${{ secrets.MACOS_INSTALLER_P12 }}
+          MACOS_INSTALLER_P12_PASSWORD: ${{ secrets.MACOS_INSTALLER_P12_PASSWORD }}
+          MACOS_APP_PROFILE_B64: ${{ secrets.MACOS_APP_PROFILE_B64 }}
+          MACOS_FILTER_PROFILE_B64: ${{ secrets.MACOS_FILTER_PROFILE_B64 }}
+          MACOS_NOTARY_KEY_B64: ${{ secrets.MACOS_NOTARY_KEY_B64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          : "${MACOS_TEAM_ID:?Apple Developer Team ID is required}"
+          : "${MACOS_APPLICATION_IDENTITY:?Developer ID Application identity is required}"
+          : "${MACOS_INSTALLER_IDENTITY:?Developer ID Installer identity is required}"
+          private="$(mktemp -d)"
+          keychain="$private/claude-guard.keychain-db"
+          trap 'security delete-keychain "$keychain" 2>/dev/null || true; rm -rf "$private"' EXIT
+          password="$(openssl rand -hex 24)"
+          printf '%s' "$MACOS_APPLICATION_P12" | base64 -D > "$private/app.p12"
+          printf '%s' "$MACOS_INSTALLER_P12" | base64 -D > "$private/installer.p12"
+          export MACOS_APP_PROFILE="$private/app.provisionprofile"
+          export MACOS_FILTER_PROFILE="$private/filter.provisionprofile"
+          export MACOS_NOTARY_KEY="$private/notary.p8"
+          printf '%s' "$MACOS_APP_PROFILE_B64" | base64 -D > "$MACOS_APP_PROFILE"
+          printf '%s' "$MACOS_FILTER_PROFILE_B64" | base64 -D > "$MACOS_FILTER_PROFILE"
+          printf '%s' "$MACOS_NOTARY_KEY_B64" | base64 -D > "$MACOS_NOTARY_KEY"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security import "$private/app.p12" -k "$keychain" -f pkcs12 -P "$MACOS_APPLICATION_P12_PASSWORD" -T /usr/bin/codesign
+          security import "$private/installer.p12" -k "$keychain" -f pkcs12 -P "$MACOS_INSTALLER_P12_PASSWORD" -T /usr/bin/pkgbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          bash macos/build.sh "$TARGET_ARCH"
+      - name: Smoke-test the installed package
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          sudo -n installer -pkg "dist/ClaudeGuard-macOS-$TARGET_ARCH.pkg" -target /
+          helper=/Library/PrivilegedHelperTools/io.github.octy-10.claudeguard.settings
+          test "$(stat -f '%u:%Lp' "$helper")" = '0:755'
+          codesign --verify --deep --strict /Applications/ClaudeGuard.app
+          "$helper" status | python -c 'import json, sys; status = json.load(sys.stdin); print(status); sys.exit(0 if status.get("ok") is True else 1)'
+          status=0
+          /Applications/ClaudeGuard.app/Contents/MacOS/ClaudeGuard --doctor > dist/doctor.txt || status=$?
+          test "$status" -eq 0 || test "$status" -eq 2
+          grep -Fq 'Claude Desktop 断网锁' dist/doctor.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeGuard-macOS-signed-${{ matrix.arch }}
+          path: dist/ClaudeGuard-macOS-${{ matrix.arch }}.pkg
+          if-no-files-found: error
+
+  publish:
+    if: ${{ inputs.publish }}
+    needs: signed-installer
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ClaudeGuard-macOS-signed-*
+          merge-multiple: true
+          path: dist
+      - name: Publish signed package assets and manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re
+          from pathlib import Path
+          tag = os.environ['RELEASE_TAG']
+          assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag)
+          assets = {}
+          for arch in ('arm64', 'x86_64'):
+              path = Path(f'dist/ClaudeGuard-macOS-{arch}.pkg')
+              with path.open('rb') as payload:
+                  assets[arch] = {'sha256': hashlib.file_digest(payload, 'sha256').hexdigest()}
+          Path('dist/latest-macos.json').write_text(json.dumps({'version': tag[1:], 'assets': assets}), encoding='utf-8')
+          PY
+          if ! gh release view "$RELEASE_TAG"; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "Claude Guard $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" dist/ClaudeGuard-macOS-arm64.pkg dist/ClaudeGuard-macOS-x86_64.pkg dist/latest-macos.json

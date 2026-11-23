@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -18,7 +19,10 @@ CONFIG_FILE = STATE_DIR / "config.json"
 BACKUP_FILE = STATE_DIR / "backup.json"
 
 # Clash Verge Rev 默认配置路径
-CLASH_VERGE_DIR = Path(os.environ.get("APPDATA", "")) / "io.github.clash-verge-rev.clash-verge-rev"
+CLASH_VERGE_DIR = (
+    Path.home() / "Library" / "Application Support" if sys.platform == "darwin"
+    else Path(os.environ.get("APPDATA", ""))
+) / "io.github.clash-verge-rev.clash-verge-rev"
 CLASH_VERGE_RUNTIME_YAML = CLASH_VERGE_DIR / "clash-verge.yaml"
 
 # 断网锁使用的 Anthropic 已知 IP 段。

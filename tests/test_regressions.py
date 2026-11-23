@@ -24,6 +24,7 @@ class RecoveryTests(unittest.TestCase):
             patch.object(hardening, "is_admin", return_value=True),
             patch.object(hardening, "load_backup", return_value=config.SystemBackup()),
             patch.object(hardening, "disable_killswitch", return_value=(True, "removed")),
+            patch.object(hardening, "set_autostart_enabled", return_value=(True, "disabled")) as autostart,
             patch.object(hardening, "run_cmd") as command,
             patch.object(hardening, "_set_policy") as registry,
         ):
@@ -31,6 +32,7 @@ class RecoveryTests(unittest.TestCase):
         powershell.assert_not_called()
         command.assert_not_called()
         registry.assert_not_called()
+        autostart.assert_called_once_with(False)
 
     def test_restore_removes_only_verified_backups(self):
         backup = config.SystemBackup(

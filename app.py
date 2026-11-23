@@ -14,9 +14,11 @@ import sys
 
 from guard.config import APP_NAME, load_config, save_config
 from guard.doctor import run_doctor
-from guard.hardening import run_rescue
-from guard.sysutil import SingleInstanceLock, is_admin, relaunch_as_admin, show_info_dialog, system_change_lock
-from guard.updater import cleanup_update_artifacts
+
+if sys.platform == "win32":
+    from guard.hardening import run_rescue
+    from guard.sysutil import SingleInstanceLock, is_admin, relaunch_as_admin, show_info_dialog, system_change_lock
+    from guard.updater import cleanup_update_artifacts
 
 
 def _cli_doctor() -> int:
@@ -59,7 +61,11 @@ def _cli_rescue() -> int:
 
 
 def main() -> int:
-    cleanup_update_artifacts()
+    if sys.platform not in {"win32", "darwin"}:
+        print("Claude Guard 支持 Windows 和 macOS。", file=sys.stderr)
+        return 1
+    if sys.platform == "win32":
+        cleanup_update_artifacts()
     parser = argparse.ArgumentParser(description="Claude Guard 轻量透明防泄漏托盘工具")
     parser.add_argument("--minimized", action="store_true", help="启动后直接隐藏到右下角托盘")
     parser.add_argument("--doctor", action="store_true", help="仅在命令行执行一次防泄漏自检")
@@ -70,7 +76,41 @@ def main() -> int:
     if args.doctor:
         return _cli_doctor()
     if args.rescue:
+        if sys.platform == "darwin":
+            from guard.macos import settings_lock
+            from guard.macos_protection import rescue
+
+            with settings_lock() as acquired:
+                if not acquired:
+                    print("系统配置正在变更，请稍后重试。", file=sys.stderr)
+                    return 1
+                result = rescue()
+                if result.get("filter_enabled") is False:
+                    cfg = load_config()
+                    cfg.protection_enabled = False
+                    try:
+                        save_config(cfg)
+                    except OSError as error:
+                        print(f"恢复操作已执行，无法保存巡检状态：{error}", file=sys.stderr)
+                        return 1
+            print(result.get("message", "紧急恢复未完成"))
+            return 0 if result["ok"] else 1
         return _cli_rescue()
+
+    if sys.platform == "darwin":
+        from guard.macos import MacInstanceLock
+
+        lock = MacInstanceLock()
+        if not lock.acquire():
+            print("Claude Guard 已在运行，请从菜单栏打开。", file=sys.stderr)
+            return 0
+        try:
+            from guard.macos_ui import run_app
+
+            run_app(start_minimized=args.minimized)
+            return 0
+        finally:
+            lock.release()
 
     lock = SingleInstanceLock()
     if not lock.acquire(wait_sec=3.0 if args.handoff else 0.0):

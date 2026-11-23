@@ -53,7 +53,7 @@
       <div class="menu-items">
         <button id="btnOverride" type="button"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>Clash 覆写脚本（可选）</button>
         <button id="btnRescue" type="button"><svg class="icon" aria-hidden="true"><use href="#i-rescue"/></svg>紧急恢复</button>
-        <button id="btnCheckUpdate" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>检查更新</span><span class="menu-badge" id="menuUpdateBadge" hidden>NEW</span></button>
+        <button id="btnCheckUpdate" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span id="checkUpdateLabel">检查更新</span><span class="menu-badge" id="menuUpdateBadge" hidden>NEW</span></button>
         <button id="btnAbout" type="button"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>关于与免责声明</button>
         <button id="btnQuit" type="button"><svg class="icon" aria-hidden="true"><use href="#i-exit"/></svg>退出程序</button>
         <small class="menu-version" id="versionTag"></small>
@@ -113,11 +113,12 @@
               </div>
               <button class="btn btn-secondary" id="btnEnableAll" type="button"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>一键配置</button>
             </header>
-            <div class="control-list">
+            <p id="macProtectionNote" class="platform-note" hidden>安装 Claude Guard 的签名安装包，即可启用系统防护。</p>
+            <div class="control-list" id="protectionControls">
               <div class="tile" data-ctrl="killswitch">
                 <span class="tile-icon"><svg class="icon" aria-hidden="true"><use href="#i-firewall"/></svg></span>
                 <div class="tile-copy">
-                  <strong>防火墙断网锁<span class="help" tabindex="0" role="note" aria-label="说明：防火墙断网锁" data-tip="核对已发现的 Claude 程序和指定目标地址段在物理网卡上的拦截规则。">?</span></strong>
+                  <strong><span id="killswitchLabel">防火墙断网锁</span><span id="killswitchHelp" class="help" tabindex="0" role="note" aria-label="说明：断网锁" data-tip="核对已发现的 Claude 程序和指定目标地址段在物理网卡上的拦截规则。">?</span></strong>
                   <small id="ctrlKillswitchSub">阻止物理网卡直连</small>
                 </div>
                 <label class="switch"><input type="checkbox" role="switch" aria-label="防火墙断网锁" id="swKillswitch"><span class="slider"></span></label>
@@ -190,7 +191,7 @@
             <header class="panel-head">
               <div class="panel-title">
                 <h2 id="guardTitle">实时守护</h2>
-                <span class="help" tabindex="0" role="note" aria-label="说明：实时守护" data-tip="后台常驻监控：本地状态每几秒快检一次，出口 IP 按设定周期全量核对，异常时用托盘气泡和提示音通知你。">?</span>
+                <span id="watchHelp" class="help" tabindex="0" role="note" aria-label="说明：实时守护" data-tip="后台常驻监控：本地状态每几秒快检一次，出口 IP 按设定周期全量核对，异常时用托盘气泡和提示音通知你。">?</span>
               </div>
               <span class="panel-meta" id="watchMeta">3 秒本地快检 · 60 秒出口巡检</span>
             </header>
@@ -243,7 +244,10 @@
                   <strong>Claude 桌面端<span class="help" tabindex="0" role="note" aria-label="说明：Claude 桌面端" data-tip="结束当前运行的 Claude 桌面客户端进程。">?</span></strong>
                   <small id="ctrlClaudeSub">查看进程运行状态</small>
                 </div>
-                <button class="chip-btn" id="btnKillClaude" type="button">安全关闭</button>
+                <div class="row-actions">
+                  <button class="chip-btn" id="btnLaunchClaude" type="button" hidden>受保护地启动</button>
+                  <button class="chip-btn" id="btnKillClaude" type="button">安全关闭</button>
+                </div>
               </div>
             </div>
           </section>
@@ -345,9 +349,9 @@
       </div>
       <div class="modal-steps">
         <ol>
-          <li>打开 Clash Verge → 订阅 → 全局扩展脚本，用下方脚本替换原内容并保存。</li>
-          <li>切换任意订阅时，脚本会自动识别订阅中的 AI 分组或主代理组，并置顶 Claude 进程及全部关联域名规则。</li>
-          <li>不再改动 TUN/DNS 参数，也不会新增多余策略组或端口；不配置此脚本同样不影响基础防泄漏检测。</li>
+          <li>备份 Clash Verge → 订阅 → 全局扩展脚本的原内容，粘贴下方脚本并重新应用订阅。</li>
+          <li id="scriptStepTwo">脚本会选择订阅的 AI 或主代理组，并添加 Claude 相关分流规则。</li>
+          <li id="scriptStepThree">在 Clash Verge 中按需开启 TUN，再回到 Claude Guard 点击「立即自检」。</li>
         </ol>
       </div>
       <details class="script-preview">

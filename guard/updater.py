@@ -8,6 +8,7 @@ import hmac
 import http.client
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from .sysutil import CREATE_NO_WINDOW, ps_quote
 
 GITHUB_REPO = "Octy-10/ClaudeGuard"
 MANIFEST_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/latest.json"
+MACOS_MANIFEST_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/latest-macos.json"
 RELEASES_LATEST_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ASSET_BYTES = 128 * 1024 * 1024
@@ -268,6 +270,39 @@ def check_for_update(current_version: str = __version__, timeout: float = 10.0) 
             checked_at=checked_at,
             error=str(exc),
         )
+
+
+def check_for_macos_update(current_version: str = __version__, timeout: float = 10.0) -> UpdateInfo:
+    """只接受当前 CPU 对应的已发布安装包。macOS Installer 负责安装和验证。"""
+    arch = platform.machine()
+    checked_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def read_manifest(_conn: http.client.HTTPSConnection, response: http.client.HTTPResponse) -> dict:
+        raw = response.read(MAX_MANIFEST_BYTES + 1)
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise ValueError("macOS 更新清单体积超出限制")
+        return json.loads(raw)
+
+    try:
+        if arch not in {"arm64", "x86_64"}:
+            raise ValueError("未知的 macOS 处理器架构")
+        manifest = _fetch_with_fallback(MACOS_MANIFEST_URL, timeout=timeout, reader=read_manifest)
+        version = manifest["version"]
+        if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version, flags=re.ASCII):
+            raise ValueError("macOS 更新版本无效")
+        asset = f"ClaudeGuard-macOS-{arch}.pkg"
+        sha256 = manifest["assets"][arch]["sha256"]
+        if not isinstance(sha256, str) or not _SHA256_RE.fullmatch(sha256):
+            raise ValueError("macOS 安装包校验值无效")
+        base = f"https://github.com/{GITHUB_REPO}/releases"
+        return UpdateInfo(
+            current_version=current_version, latest_version=version, available=is_newer_version(version, current_version),
+            asset=asset, sha256=sha256, download_url=f"{base}/download/v{version}/{asset}",
+            release_url=f"{base}/tag/v{version}", can_self_update=True, checked_at=checked_at,
+            notes="下载已签名的 macOS 安装包，退出 Claude Guard 后使用系统安装器更新。",
+        )
+    except (OSError, ValueError, TypeError, KeyError, http.client.HTTPException) as exc:
+        return UpdateInfo(current_version=current_version, checked_at=checked_at, error=f"无法获取 macOS 发布信息：{exc}")
 
 
 def download_update(

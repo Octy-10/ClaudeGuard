@@ -29,32 +29,33 @@ def read_config(path: Path) -> dict:
     return data
 
 
-def subscription_probe_issues(config: dict) -> list[str]:
+def subscription_probe_issues(config: dict, *, group: str = PROBE_GROUP, inbound: str = PROBE_INBOUND, port: int = PROBE_PORT) -> list[str]:
+    group_name = group
     issues = []
     if str(config.get("mode", "")).casefold() != "rule":
         issues.append("请在 Clash 使用规则模式")
-    if any(str(config.get(key)) == str(PROBE_PORT) for key in ("mixed-port", "port", "socks-port", "redir-port", "tproxy-port")):
-        issues.append(f"Guard 专用端口 {PROBE_PORT} 与现有端口冲突")
+    if any(str(config.get(key)) == str(port) for key in ("mixed-port", "port", "socks-port", "redir-port", "tproxy-port")):
+        issues.append(f"Guard 专用端口 {port} 与现有端口冲突")
 
     listeners = config.get("listeners")
     probe_listeners = [
         entry for entry in listeners if isinstance(entry, dict) and (
-            entry.get("name") == PROBE_INBOUND or str(entry.get("port")) == str(PROBE_PORT)
+            entry.get("name") == inbound or str(entry.get("port")) == str(port)
         )
     ] if isinstance(listeners, list) else []
     if not probe_listeners:
         return [*issues, "请在总览点击「配置出口检测」，保存并重新应用新版全局扩展脚本"]
     if probe_listeners != [{
-        "name": PROBE_INBOUND, "type": "http", "listen": "127.0.0.1", "port": PROBE_PORT,
-        "proxy": PROBE_GROUP, "users": [],
+        "name": inbound, "type": "http", "listen": "127.0.0.1", "port": port,
+        "proxy": group_name, "users": [],
     }]:
-        issues.append(f"未找到绑定到 127.0.0.1:{PROBE_PORT} 的 Guard 专用探测入口")
+        issues.append(f"未找到绑定到 127.0.0.1:{port} 的 Guard 专用入口")
 
     groups = config.get("proxy-groups")
     groups = [entry for entry in groups if isinstance(entry, dict)] if isinstance(groups, list) else []
-    probes = [entry for entry in groups if entry.get("name") == PROBE_GROUP]
+    probes = [entry for entry in groups if entry.get("name") == group_name]
     if len(probes) != 1:
-        return [*issues, "缺少唯一的 Guard-Probe 体检策略组"]
+        return [*issues, f"缺少唯一的 {group_name} 策略组"]
     group = probes[0]
     choices = group.get("proxies")
     if (
@@ -64,24 +65,24 @@ def subscription_probe_issues(config: dict) -> list[str]:
         or any(group.get(key) for key in ("include-all", "include-all-proxies", "include-all-providers", "use"))
         or len(set(choices)) != len(choices)
     ):
-        return [*issues, "Guard-Probe 需要显式节点列表和 REJECT 兜底"]
+        return [*issues, f"{group_name} 需要显式节点列表和 REJECT 兜底"]
     if len(choices) < 2:
-        return [*issues, "Guard-Probe 没有可用节点。请使用含有内联节点的订阅"]
+        return [*issues, f"{group_name} 没有可用节点。请使用含有内联节点的订阅"]
 
-    reserved = NON_REMOTE_TYPES | {"global", PROBE_GROUP.lower().replace("-", "")}
+    reserved = NON_REMOTE_TYPES | {"global", "guardprobe", "guardclaude"}
     candidates = set(choices[1:])
     group_names = {entry.get("name") for entry in groups if isinstance(entry.get("name"), str)}
     proxies = config.get("proxies")
     entries = [
         entry for entry in proxies if isinstance(entry, dict)
-        and isinstance(entry.get("name"), str) and entry["name"] in candidates | {PROBE_GROUP, "REJECT"}
+        and isinstance(entry.get("name"), str) and entry["name"] in candidates | {group_name, "REJECT"}
     ] if isinstance(proxies, list) else []
     safe = {
         entry["name"] for entry in entries if str(entry.get("type", "")).strip().casefold() in PROBE_NODE_TYPES
         and entry["name"].strip().casefold().replace("-", "") not in reserved
     }
     if safe != candidates or len(entries) != len(candidates) or candidates & group_names or "REJECT" in group_names:
-        issues.append("Guard-Probe 只能包含明确的代理节点及内置 REJECT")
+        issues.append(f"{group_name} 只能包含明确的代理节点及内置 REJECT")
     return issues
 
 

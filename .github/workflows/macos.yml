@@ -1,0 +1,55 @@
+name: macOS
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller pillow
+
+      - name: Test macOS diagnostics and Clash script
+        run: |
+          python -m unittest discover -s tests -p 'test_macos*.py' -v
+          python -c 'from guard.macos_ui import GuardMenuActions'
+          node --test tests/macos-probe.test.cjs
+
+      - name: Build and smoke-test the app bundle
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          bash macos/build.sh "$TARGET_ARCH"
+          executable="dist/ClaudeGuard.app/Contents/MacOS/ClaudeGuard"
+          doctor_status=0
+          "$executable" --doctor > dist/doctor.txt || doctor_status=$?
+          cat dist/doctor.txt
+          test "$doctor_status" -eq 0 || test "$doctor_status" -eq 2
+          grep -Fq 'Claude Desktop 断网锁' dist/doctor.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeGuard-macOS-${{ matrix.arch }}
+          path: dist/ClaudeGuard-macOS-${{ matrix.arch }}.zip
+          if-no-files-found: error

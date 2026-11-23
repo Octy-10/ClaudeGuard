@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import json
 import ssl
+import sys
 import time
 from functools import lru_cache
 from ipaddress import ip_address
@@ -40,6 +41,10 @@ def build_ssl_context() -> ssl.SSLContext:
 def verify_proxy_listener(port: int) -> bool:
     if type(port) is not int or not 1 <= port <= 65535:
         return False
+    if sys.platform == "darwin":
+        from .macos import verify_proxy_listener as verify_macos_listener
+
+        return verify_macos_listener(port)
     ok, data, _ = run_ps_json(
         "$ErrorActionPreference='Stop';"
         f"$listeners = @(Get-NetTCPConnection -State Listen -LocalPort {port});"

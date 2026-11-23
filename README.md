@@ -4,9 +4,9 @@
 
 # Claude Guard
 
-**为 Windows 上的 Claude 使用场景提供网络自检、断网锁和出口漂移提醒。** 搭配本机的 **Clash Verge Rev（Mihomo）** 使用。首次配置后，可以在同一个窗口查看 TUN 状态、测试节点出口和 Windows 防护项，需要时从托盘继续监控。
+**Claude Guard 提供网络自检、出口漂移提醒和 Claude Desktop 断网保护。** 搭配本机的 **Clash Verge Rev（Mihomo）** 使用，支持 Windows 和 macOS 15 及更新版本。
 
-[下载 Windows 版](https://github.com/Octy-10/ClaudeGuard/releases/latest) · [首次配置](#首次配置) · [常见问题](#常见问题) · [紧急恢复](#紧急恢复)
+[GitHub Releases](https://github.com/Octy-10/ClaudeGuard/releases/latest) · [macOS 安装与使用](#macos-安装与使用) · [Windows 首次配置](#首次配置) · [常见问题](#常见问题) · [紧急恢复](#紧急恢复)
 
 ## 界面预览
 
@@ -32,6 +32,28 @@
 ```powershell
 Get-FileHash .\ClaudeGuard.exe -Algorithm SHA256
 ```
+
+## macOS 安装与使用
+
+正式安装包用于 macOS 15 及更新版本。Apple Silicon 选 `ClaudeGuard-macOS-arm64.pkg`，Intel 选 `ClaudeGuard-macOS-x86_64.pkg`。签名安装包发布后可在 [GitHub Releases](https://github.com/Octy-10/ClaudeGuard/releases/latest) 获取。
+
+1. 安装签名 `.pkg`，从「应用程序」打开 Claude Guard。在工具菜单复制 **Clash 本机代理与出口检测脚本**。备份 Clash 原有脚本，再将专用脚本保存到 **Clash Verge → 订阅 → 全局扩展脚本** 并重新应用订阅。
+2. 在 Clash 使用 **规则模式**，分别为 **Guard-Probe**（自检和 IP 体检）与 **Guard-Claude**（Claude Desktop）选择远端节点。两组首次应用时默认使用 `REJECT`。需要检测 TUN 时，在 Clash 中单独开启。
+3. 完全退出 Claude Desktop，在 Guard 开启 **Claude Desktop 断网锁**，按 macOS 提示批准网络扩展。回到 Guard 点击 **受保护地启动**。断网锁包含 Claude Desktop 的应用级保护，以及跨应用的已知 Anthropic 地址段拦截。
+4. 按需开启 DNS、IPv6、登录自动启动和告警。系统网络变更会请求管理员授权。WebRTC 描述文件由 **系统设置 → 通用 → 设备管理** 安装或移除，修改后需重启浏览器。最小化窗口或从菜单栏隐藏窗口可继续巡检。
+
+打开 **紧急恢复** 可按备份还原 DNS、IPv6 和时区，并移除 Guard 的网络过滤配置。若安装过 Guard 的 WebRTC 描述文件，请在「设备管理」中移除。更新时从工具菜单检查版本，退出 Guard 后打开新安装包。当前保护范围、安装包构建及验证见 [macOS 发行说明](docs/macos-release.md)。
+
+可在 Mac 上使用 Python 3.10 或更新版本运行源码诊断。命令在仓库根目录执行。
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python app.py
+```
+
+`python app.py --doctor` 在终端执行一次自检。系统防护通过签名安装包启用。
 
 ## 首次配置
 
