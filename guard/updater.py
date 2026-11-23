@@ -9,11 +9,13 @@ import http.client
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 from urllib.parse import urljoin, urlsplit
@@ -120,6 +122,21 @@ def detect_local_proxy_port() -> Optional[int]:
     return None
 
 
+@lru_cache(maxsize=1)
+def _build_ssl_context() -> ssl.SSLContext:
+    """构建合并系统证书与 certifi 根证书的 TLS 上下文，解决部分 Windows 未缓存新根证书导致的校验失败。"""
+    ctx = ssl.create_default_context()
+    try:
+        import certifi  # type: ignore[import-not-found]
+
+        cafile = certifi.where()
+        if cafile:
+            ctx.load_verify_locations(cafile=cafile)
+    except (ImportError, OSError, ssl.SSLError):
+        pass
+    return ctx
+
+
 def _open_https(
     url: str,
     *,
@@ -128,6 +145,7 @@ def _open_https(
     max_redirects: int = 5,
 ) -> Tuple[http.client.HTTPSConnection, http.client.HTTPResponse]:
     """发起 HTTPS GET 请求并按白名单跟随重定向。"""
+    ctx = _build_ssl_context()
     current_url = url
     for _ in range(max_redirects + 1):
         if not is_allowed_update_url(current_url):
@@ -136,10 +154,10 @@ def _open_https(
         host = endpoint.hostname or ""
         port = endpoint.port or 443
         if proxy_port is not None:
-            conn = http.client.HTTPSConnection("127.0.0.1", proxy_port, timeout=timeout)
+            conn = http.client.HTTPSConnection("127.0.0.1", proxy_port, timeout=timeout, context=ctx)
             conn.set_tunnel(host, port)
         else:
-            conn = http.client.HTTPSConnection(host, port, timeout=timeout)
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
 
         resource = endpoint.path or "/"
         if endpoint.query:

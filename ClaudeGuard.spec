@@ -11,7 +11,7 @@ datas = [
 binaries = []
 hiddenimports = ["yaml", "guard.ui"]
 
-for pkg in ("webview", "pythonnet", "clr_loader"):
+for pkg in ("webview", "pythonnet", "clr_loader", "certifi"):
     pkg_datas, pkg_bins, pkg_hidden = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_bins

@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import ssl
 import tempfile
 import unittest
 from pathlib import Path
@@ -197,6 +198,14 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(res_same["ok"])
         self.assertFalse(res_same["update"]["available"])
         self.assertEqual(badge_calls[-1], (False, ""))
+
+    def test_ssl_context_enforces_verification_and_loads_certifi(self):
+        updater._build_ssl_context.cache_clear()
+        ctx = updater._build_ssl_context()
+        self.assertIsInstance(ctx, ssl.SSLContext)
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(ctx.check_hostname)
+        self.assertGreater(ctx.cert_store_stats().get("x509_ca", 0), 0)
 
     def test_tray_badge_icon_and_tooltip_state(self):
         hicon = tray._create_tray_icon(tray.STATUS_RGB["green"], badge=True)
