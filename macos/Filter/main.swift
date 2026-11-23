@@ -39,9 +39,10 @@ final class GuardFilterDataProvider: NEFilterDataProvider {
     }
 
     override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
-        let isClaude = isClaudeIdentifier(flow.sourceAppIdentifier)
-            || isClaudeProcess(flow.sourceAppAuditToken)
-            || (flow.sourceProcessAuditToken != flow.sourceAppAuditToken && isClaudeProcess(flow.sourceProcessAuditToken))
+        let appToken = flow.sourceAppAuditToken
+        let processToken = flow.sourceProcessAuditToken
+        let isClaude = isClaudeProcess(appToken)
+            || (processToken != appToken && isClaudeProcess(processToken))
         guard isClaude else { return .allow() }
         guard let socket = flow as? NEFilterSocketFlow,
               let endpoint = socket.remoteEndpoint as? NWHostEndpoint else { return .drop() }
